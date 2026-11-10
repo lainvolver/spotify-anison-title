@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#121212" />
+  <meta name="description" content="Spotifyのプレイリストの曲がどのアニメのOP/EDかを自動表示し、同期歌詞タップでジャンプ再生できるPWA" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Anison Viewer" />
+  <title>Anison Viewer - アニソンOP/EDビューア</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ===== ヘッダー ===== -->
+  <header class="app-header">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" class="brand-icon" />
+      <span class="brand-name">Anison Viewer</span>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="btnSafety" title="安全性について" aria-label="安全性について">🛡️</button>
+      <button class="icon-btn" id="btnSettings" title="設定" aria-label="設定">⚙️</button>
+      <button class="text-btn hidden" id="btnLogout">ログアウト</button>
+    </div>
+  </header>
+
+  <!-- ===== 未ログイン画面 ===== -->
+  <main id="loginView" class="view hidden">
+    <section class="hero">
+      <h1>🎬 アニソンの<span class="accent">タイアップ</span>が一目でわかる</h1>
+      <p class="hero-sub">
+        Spotifyのプレイリストの曲が「どのアニメのOP/EDか」を自動でバッジ表示。<br />
+        同期歌詞をタップすれば、そのフレーズへ瞬時にジャンプ再生できます。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>① Spotify Client ID を設定</h2>
+      <p class="muted small">
+        Spotifyの仕様上、1つのアプリIDで利用できる人数が制限されているため、
+        各自で無料のClient IDを発行して使う方式（BYOK）を採用しています。
+      </p>
+      <div class="form-row">
+        <input type="text" id="clientIdInputLogin" class="input" placeholder="例: 1a2b3c4d5e6f..." autocomplete="off" spellcheck="false" />
+        <button class="btn" id="btnSaveClientIdLogin">保存</button>
+      </div>
+      <p class="small" id="clientIdStatusLogin"></p>
+      <details class="guide-details" id="guideDetailsLogin">
+        <summary>📘 Spotify Client ID の取得手順（1分）</summary>
+        <div class="guide-container" data-guide></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>② Spotifyでログイン</h2>
+      <button class="btn btn-primary btn-large" id="btnLogin">
+        <span class="spotify-dot"></span> Spotifyでログイン
+      </button>
+      <p class="muted small">
+        パスワードはSpotify公式サイト（accounts.spotify.com）でのみ入力されます。
+        <a href="#" id="linkSafetyLogin">なぜ安全なの？</a>
+      </p>
+    </section>
+  </main>
+
+  <!-- ===== ログイン後メイン画面 ===== -->
+  <main id="mainView" class="view hidden">
+    <div class="layout">
+      <!-- プレイリスト一覧 -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <h2>プレイリスト</h2>
+          <button class="icon-btn small" id="btnReloadPlaylists" title="再読み込み" aria-label="再読み込み">🔄</button>
+        </div>
+        <form class="url-form" id="playlistUrlForm">
+          <input type="text" id="playlistUrlInput" class="input" placeholder="プレイリストURL / ID を貼り付け" autocomplete="off" spellcheck="false" />
+          <button class="btn" type="submit">読込</button>
+        </form>
+        <ul class="playlist-list" id="playlistList"></ul>
+        <button class="btn btn-ghost full hidden" id="btnMorePlaylists">さらに読み込む</button>
+      </aside>
+
+      <!-- 曲一覧 -->
+      <section class="content" id="content">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">🎵</div>
+          <p>プレイリストを選択してください</p>
+          <button class="btn btn-ghost mobile-only" id="btnOpenSidebarEmpty">プレイリストを選ぶ</button>
+        </div>
+
+        <div id="playlistDetail" class="hidden">
+          <div class="playlist-header">
+            <button class="icon-btn mobile-only" id="btnBackToPlaylists" aria-label="プレイリスト一覧へ戻る">←</button>
+            <img id="plCover" class="pl-cover" alt="" />
+            <div class="pl-meta">
+              <div class="muted small">プレイリスト</div>
+              <h1 id="plName" class="pl-name"></h1>
+              <div class="muted small" id="plInfo"></div>
+            </div>
+          </div>
+          <div class="toolbar">
+            <div class="progress-text small muted" id="animeProgress"></div>
+            <div class="toolbar-actions">
+              <label class="toggle small">
+                <input type="checkbox" id="filterAnimeOnly" /> アニメ曲のみ
+              </label>
+              <button class="btn btn-ghost small" id="btnRescan" title="キャッシュを無視して再検索（手動編集は保持）">再検索</button>
+            </div>
+          </div>
+          <ol class="track-list" id="trackList"></ol>
+          <div class="loading hidden" id="trackLoading"><div class="spinner"></div>読み込み中...</div>
+        </div>
+      </section>
+
+      <!-- 歌詞パネル（PC: 右カラム / スマホ: 全画面） -->
+      <section class="lyrics-panel" id="lyricsPanel" aria-hidden="true">
+        <div class="lyrics-head">
+          <button class="icon-btn mobile-only" id="btnCloseLyrics" aria-label="歌詞を閉じる">⌄</button>
+          <div class="lyrics-title-wrap">
+            <div class="lyrics-track" id="lyricsTrack">歌詞</div>
+            <div class="lyrics-artist muted small" id="lyricsArtist"></div>
+            <div id="lyricsBadge"></div>
+          </div>
+          <button class="icon-btn small" id="btnLyricsSync" title="自動スクロール切替" aria-label="自動スクロール切替">📍</button>
+        </div>
+        <div class="lyrics-tabs">
+          <span class="lyrics-mode small muted" id="lyricsMode"></span>
+        </div>
+        <div class="lyrics-body" id="lyricsBody">
+          <p class="muted center">曲を選択すると歌詞が表示されます</p>
+        </div>
+        <div class="lyrics-foot small muted">
+          歌詞提供: <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>
+          ／ 同期歌詞の行をタップでその位置へジャンプ（Premium）
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===== 下部固定ミニプレイヤー ===== -->
+  <footer class="player-bar hidden" id="playerBar">
+    <div class="seek-row">
+      <span class="time" id="timeCurrent">0:00</span>
+      <input type="range" id="seekBar" class="seek-bar" min="0" max="1000" value="0" step="1" aria-label="シークバー" />
+      <span class="time" id="timeTotal">0:00</span>
+    </div>
+    <div class="player-main">
+      <div class="now-playing" id="nowPlaying" role="button" tabindex="0" aria-label="歌詞を表示">
+        <img id="npArt" class="np-art" alt="" />
+        <div class="np-text">
+          <div class="np-title" id="npTitle">再生していません</div>
+          <div class="np-artist muted small" id="npArtist"></div>
+          <div class="np-badge" id="npBadge"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="ctrl-btn" id="btnPrev" aria-label="前の曲">⏮</button>
+        <button class="ctrl-btn play" id="btnPlayPause" aria-label="再生/一時停止">▶</button>
+        <button class="ctrl-btn" id="btnNext" aria-label="次の曲">⏭</button>
+      </div>
+      <div class="player-extra">
+        <span class="device-name small muted" id="deviceName"></span>
+        <button class="icon-btn" id="btnToggleLyrics" title="歌詞" aria-label="歌詞">🎤</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ===== トースト ===== -->
+  <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+  <!-- ===== モーダル: 設定 & Client ID 取得ガイド ===== -->
+  <div class="modal hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="settingsTitle">⚙️ 設定</h2>
+        <button class="icon-btn" data-close aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <h3>Spotify Client ID</h3>
+        <div class="form-row">
+          <input type="text" id="clientIdInputSettings" class="input" placeholder="あなたのClient ID" autocomplete="off" spellcheck="false" />
+          <button class="btn" id="btnSaveClientIdSettings">保存</button>
+        </div>
+        <p class="small" id="clientIdStatusSettings"></p>
+
+        <h3>📘 Spotify Client ID の取得手順（1分）</h3>
+        <div class="guide-container" data-guide></div>
+
+        <h3>キャッシュ管理</h3>
+        <p class="small muted" id="cacheInfo"></p>
+        <div class="btn-row">
+          <button class="btn btn-ghost small" id="btnClearAutoCache">自動判定キャッシュを削除</button>
+          <button class="btn btn-ghost small" id="btnExportCache">エクスポート</button>
+          <label class="btn btn-ghost small file-label">
+            インポート<input type="file" id="importCacheFile" accept="application/json" hidden />
+          </label>
+        </div>
+        <p class="small muted">※手動で編集したタイアップ情報は「自動判定キャッシュを削除」では消えません。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== モーダル: 安全性について ===== -->
+  <div class="modal hidden" id="safetyModal" role="dialog" aria-modal="true" aria-labelledby="safetyTitle">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="safetyTitle">🛡️ このページが安全な理由</h2>
+        <button class="icon-btn" data-close aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <ol class="safety-list">
+          <li>
+            <strong>🔐 パスワードは当アプリを一切通りません</strong>
+            <p>ログインは Spotify 公式ドメイン（<code>accounts.spotify.com</code>）の画面で直接行われます。
+              当アプリは業界標準の <b>OAuth 2.0 PKCE</b> 方式を使っており、あなたのパスワードを見ることも保存することもできません。</p>
+          </li>
+          <li>
+            <strong>💾 データはあなたの端末の中だけに保存されます</strong>
+            <p>取得したアクセストークン・Client ID・アニメ情報キャッシュは、お使いのブラウザ内（<code>localStorage</code>）にのみ保存されます。
+              当アプリには独自のサーバーが存在せず、外部サーバーへ送信されることは一切ありません。
+              （通信先は Spotify API と、公開データベース AnimeThemes / Wikipedia / LRCLIB への曲名検索のみです）</p>
+          </li>
+          <li>
+            <strong>🎚️ 要求する権限は最小限です</strong>
+            <p>要求するのは「プレイリストの閲覧」と「再生状態の取得・再生制御」のみです。
+              プレイリストの編集・削除、フォロー操作、個人情報（メールアドレス等）へのアクセス権は要求しません。</p>
+            <ul class="scope-list">
+              <li><code>playlist-read-private</code> 非公開プレイリストの閲覧</li>
+              <li><code>playlist-read-collaborative</code> 共同プレイリストの閲覧</li>
+              <li><code>user-read-playback-state</code> 再生状態の取得</li>
+              <li><code>user-modify-playback-state</code> 再生・一時停止・シーク等の操作</li>
+              <li><code>user-read-currently-playing</code> 再生中の曲の取得</li>
+            </ul>
+          </li>
+          <li>
+            <strong>📖 ソースコードはすべて公開されています</strong>
+            <p>本アプリは HTML / CSS / JavaScript のみで作られており、GitHub 上で全ソースコードを誰でも閲覧・検証できます。
+              ブラウザの開発者ツールで実際の通信内容を確認することも可能です。</p>
+          </li>
+        </ol>
+        <p class="small muted">連携を解除したい場合は、Spotifyの「<a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">アプリの管理</a>」からいつでもアクセス権を取り消せます。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== モーダル: タイアップ情報の手動編集 ===== -->
+  <div class="modal hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box small-box">
+      <div class="modal-head">
+        <h2 id="editTitle">✏️ タイアップ情報を編集</h2>
+        <button class="icon-btn" data-close aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="small muted" id="editTrackInfo"></p>
+        <label class="field">
+          <span>アニメ名</span>
+          <input type="text" id="editAnime" class="input" placeholder="例: 葬送のフリーレン" />
+        </label>
+        <label class="field">
+          <span>OP/ED・メモ</span>
+          <input type="text" id="editTheme" class="input" placeholder="例: OP1 / ED2 / 挿入歌" list="themeSuggest" />
+          <datalist id="themeSuggest">
+            <option value="OP"></option><option value="OP1"></option><option value="OP2"></option>
+            <option value="ED"></option><option value="ED1"></option><option value="ED2"></option>
+            <option value="挿入歌"></option><option value="主題歌"></option><option value="劇場版主題歌"></option>
+          </datalist>
+        </label>
+        <p class="small muted" id="editSource"></p>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnEditSave">保存</button>
+          <button class="btn btn-ghost" id="btnEditNone" title="アニメ曲ではないとして保存">アニメ曲ではない</button>
+          <button class="btn btn-ghost" id="btnEditReset" title="手動編集を破棄して自動判定し直す">自動判定に戻す</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== モーダル: 通知（デバイス未検出 / Premium限定） ===== -->
+  <div class="modal hidden" id="noticeModal" role="dialog" aria-modal="true" aria-labelledby="noticeTitle">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box small-box">
+      <div class="modal-head">
+        <h2 id="noticeTitle"></h2>
+        <button class="icon-btn" data-close aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="noticeBody"></div>
+        <div class="btn-row" id="noticeActions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Client ID 取得ガイドのテンプレート（JSで各所に複製） -->
+  <template id="guideTemplate">
+    <ol class="guide-steps">
+      <li>
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>
+        にアクセスし、Spotifyアカウントでログインする。
+      </li>
+      <li><strong>「Create app」</strong> ボタンを押す。</li>
+      <li><strong>App name</strong> と <strong>App description</strong> に好きな名前（例：<code>Anison Viewer</code>）を入力する。</li>
+      <li>
+        <strong>Redirect URIs</strong> の欄に、<strong>下に表示されているURLをコピーして貼り付け、「Add」ボタンを押す</strong>
+        （※末尾のスラッシュまで完全一致させること）。
+        <div class="copy-box">
+          <code class="redirect-uri" data-redirect-uri></code>
+          <button class="btn btn-small" type="button" data-copy-redirect>📋 コピー</button>
+        </div>
+        <p class="small muted warn-localhost hidden" data-localhost-warn>
+          ⚠️ Spotifyは <code>http://localhost</code> を受け付けません。ローカルで試す場合は
+          <code>http://127.0.0.1:ポート番号/</code> でページを開き直してから登録してください。
+        </p>
+      </li>
+      <li>「APIs used」で <strong>Web API</strong> にチェックを入れ、利用規約に同意して <strong>「Save」</strong> を押す。</li>
+      <li>
+        作成されたアプリの <strong>「Settings」</strong> を開き、表示されている <strong>Client ID</strong>
+        をコピーしてこのアプリの入力欄に貼り付ける（※Client Secretは不要です）。
+      </li>
+    </ol>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
