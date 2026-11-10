@@ -1,0 +1,25 @@
+# OS生成ファイル
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# エディタ・IDE設定
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AIエージェント・ローカル作業用ディレクトリ
+.gemini/
+.agent/
+.claude/
+
+# ログ・一時ファイル
+*.log
+tmp/
+temp/
+
+# 環境変数・秘密情報（誤コミット防止）
+.env
+.env.*
