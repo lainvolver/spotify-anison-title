@@ -39,9 +39,11 @@ const LS = {
   token: 'av_token',
   verifier: 'av_pkce_verifier',
   authState: 'av_pkce_state',
-  animeCache: 'av_anime_cache_v1',
+  animeCache: 'av_anime_cache_v2',
+  legacyAnimeCache: 'av_anime_cache_v1',
   lastPlaylist: 'av_last_playlist',
   autoScroll: 'av_auto_scroll',
+  selectedDevice: 'av_selected_device',
 };
 
 // 歌詞ハイライトの先読みオフセット（通信遅延の補正, ms）
@@ -58,6 +60,10 @@ const state = {
   knownTracks: new Map(),    // trackId -> 曲モデル（プレイリスト外の再生中曲も含む）
   loadGeneration: 0,         // プレイリスト切替時の古い読み込み破棄用
   playback: null,            // { isPlaying, progressMs, durationMs, fetchedAt, track, device }
+  devices: [],               // 利用可能なSpotify Connectデバイス一覧
+  selectedDeviceId: localStorage.getItem(LS.selectedDevice) || null,
+  volumeDragging: false,
+  lastVolume: 50,            // ミュート解除用の直前音量
   lastPlaybackTrackId: null,
   lyrics: { track: null, lines: [], synced: false, activeIndex: -1, reqId: 0 },
   autoScroll: localStorage.getItem(LS.autoScroll) !== 'off',
@@ -68,6 +74,8 @@ const state = {
   tickTimer: null,
   animeCache: {},            // trackId -> { entries:[{anime, theme}], source, manual, none, ts }
   animeErrors: new Set(),    // 検索失敗した trackId（一時的）
+  wikiPageCache: new Map(),  // Wikipedia pageTitle -> wikitext（同一セッション内キャッシュ）
+  recentAnimePages: [],      // 直近ヒットしたアニメ記事タイトル（同一プレイリスト内の高速判定用）
   lyricsCache: new Map(),    // trackId -> 歌詞データ
 };
 
@@ -93,11 +101,13 @@ function fmtTime(ms) {
 }
 
 // 比較用に文字列を正規化（全角半角統一・小文字化・空白記号除去）
+// ※「＄・￥・€」など記号のみの曲名が空文字にならないようフォールバック付き
 function norm(str) {
-  return String(str ?? '')
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]/gu, '');
+  const s = String(str ?? '').normalize('NFKC').toLowerCase();
+  const alnum = s.replace(/[\s\p{P}\p{S}]/gu, '');
+  if (alnum.length >= 2) return alnum;
+  const sym = s.replace(/[\s・、。，．「」『』()（）\[\]［］【】〔〕〈〉《》"'”’]/gu, '');
+  return sym || alnum;
 }
 
 // 正規表現用エスケープ
@@ -641,7 +651,20 @@ function markPlayingRow() {
    ========================================================== */
 function loadAnimeCache() {
   try {
-    state.animeCache = JSON.parse(localStorage.getItem(LS.animeCache) || '{}') || {};
+    const raw = localStorage.getItem(LS.animeCache);
+    if (raw) {
+      state.animeCache = JSON.parse(raw) || {};
+      return;
+    }
+    // 旧キャッシュ（v1）からは手動編集したデータのみ引き継ぎ、誤判定のあった自動判定分は破棄
+    const legacy = JSON.parse(localStorage.getItem(LS.legacyAnimeCache) || '{}') || {};
+    const migrated = {};
+    for (const [id, v] of Object.entries(legacy)) {
+      if (v && v.manual) migrated[id] = v;
+    }
+    state.animeCache = migrated;
+    localStorage.setItem(LS.animeCache, JSON.stringify(migrated));
+    localStorage.removeItem(LS.legacyAnimeCache);
   } catch {
     state.animeCache = {};
   }
@@ -726,7 +749,8 @@ function updateAnimeProgress() {
 /* ==========================================================
    9. アニメOP/ED情報：非同期検索キュー
    ========================================================== */
-const animeQueue = { items: [], running: 0, concurrency: 2, pending: new Set() };
+// 外部API（Wikipedia等）のレート制限を回避するため並列数は1にして順次検索
+const animeQueue = { items: [], running: 0, concurrency: 1, pending: new Set() };
 
 function enqueueAnime(track, priority = false) {
   if (!track?.id || track.isLocal && !track.name) return;
@@ -756,8 +780,11 @@ function pumpAnimeQueue() {
     const track = animeQueue.items.shift();
     animeQueue.running++;
     (async () => {
+      let fromMemory = false;
       try {
         const result = await lookupAnime(track);
+        fromMemory = !!result._fromMemory;
+        delete result._fromMemory;
         setAnimeCache(track.id, result);
       } catch (e) {
         console.warn('アニメ情報検索失敗:', track.name, e);
@@ -766,7 +793,7 @@ function pumpAnimeQueue() {
         animeQueue.pending.delete(track.id);
         updateBadges(track.id);
         updateAnimeProgress();
-        await sleep(350); // 外部APIへの負荷軽減
+        if (!fromMemory) await sleep(500); // 外部APIへの負荷軽減
         animeQueue.running--;
         pumpAnimeQueue();
       }
@@ -778,10 +805,12 @@ function pumpAnimeQueue() {
    10. アニメOP/ED情報：検索ロジック（複数ソースのフォールバック）
    ========================================================== */
 
-// キーワード（オープニング等）と番号からテーマ表記を作る
-function themeFromKeyword(keyword, num) {
-  const k = (keyword || '').toUpperCase();
-  const n = num ? String(parseInt(num, 10)) : '';
+// 説明文からテーマ表記（OP / OP2 / ED / 主題歌 / 挿入歌 等）を抽出
+function parseThemeType(text) {
+  const m = String(text || '').match(/(?:第(\d)\s*(?:クール|期)\s*(?:の)?)?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング|テーマ・ソング)(?:テーマ|主題歌|曲|ソング)?(?:\s*第?(\d{1,2})(?!\s*[話幕章]))?/i);
+  if (!m) return null;
+  const k = m[2].toUpperCase();
+  const n = m[3] || m[1] || '';
   if (k.includes('オープニング') || k === 'OP') return `OP${n}`;
   if (k.includes('エンディング') || k === 'ED') return `ED${n}`;
   if (k.includes('挿入歌')) return '挿入歌';
@@ -789,33 +818,72 @@ function themeFromKeyword(keyword, num) {
   return '主題歌';
 }
 
-// 「『〇〇』遊郭編のオープニングテーマ」のような文字列からタイアップ候補を全抽出
-function extractTieups(text) {
-  const results = [];
-  const re = /[「『]([^「『」』]{1,60})[」』]\s*([^「『」』()（）。、\n]{0,20}?)\s*(?:の|で)?\s*(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング)(?:テーマ)?(?:曲)?\s*(?:第)?(\d{1,2})?/gi;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    let anime = m[1].trim();
-    let mid = (m[2] || '').trim().replace(/^[のでは\s]+/, '').replace(/[のでは\s・]+$/, '');
-    // 「遊郭編」「第2期」「Season 2」などはアニメ名に含める
-    if (mid && mid.length <= 15 && /(編|期|シーズン|章|クール|season|シリーズ|第\d+|\d(nd|rd|th))/i.test(mid)) {
-      anime = `${anime} ${mid}`;
-    }
-    // 直前の文脈（アニメ/劇場版/映画）があれば信頼度アップ
-    const before = text.slice(Math.max(0, m.index - 12), m.index);
-    const animeContext = /(アニメ|劇場版|映画|TV|テレビ)/i.test(before);
-    results.push({ anime, theme: themeFromKeyword(m[3], m[4]), animeContext, raw: m[1] });
+// タイトルの表記ゆれ候補（「LIKE LIKE LIKE」→「LIKE3」など）を生成
+function getTitleVariants(track) {
+  const raw = String(track.name || '').trim();
+  const clean = cleanTitle(raw);
+  const set = new Set([clean, raw].filter(Boolean));
+  const rep = clean.match(/^(\S+)(\s+\1){1,4}$/i);
+  if (rep) {
+    const count = clean.split(/\s+/).length;
+    set.add(`${rep[1]}${count}`);
   }
-  return results;
+  if (track.album) {
+    const ca = cleanTitle(track.album);
+    if (ca && ca.length <= 25 && ca.toLowerCase() !== 'single') set.add(ca);
+  }
+  return [...set];
 }
 
-// ソース0: Spotifyの曲名・アルバム名に含まれるタイアップ表記を解析
+// アーティスト名からキャラ名・CV声優名などを分解抽出（日本人名の空白も除去）
+function getArtistVariants(track) {
+  const out = [];
+  const rmCjkSpace = (s) => s.replace(/(?<=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])\s+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])/gu, '');
+  for (const a of track.artists || []) {
+    const s = String(a || '').trim();
+    if (!s) continue;
+    const cvMatch = s.match(/^(.+?)\s*[(\（\[［]\s*(?:CV|cv|Vo|vo)\s*[:：.．・]?\s*([^)\）\]］]+)[)\）\]］]/);
+    if (cvMatch) {
+      out.push(rmCjkSpace(cvMatch[1].trim()));
+      out.push(rmCjkSpace(cvMatch[2].trim()));
+    }
+    const base = rmCjkSpace(s.replace(/\s*[(\（\[［][^)\）\]］]*[)\）\]］]\s*/g, '').trim());
+    if (base && !out.includes(base)) out.push(base);
+  }
+  return out.filter(Boolean);
+}
+
+// アニメ作品名の整形（曖昧さ回避括弧や長すぎるサブタイトルを整理）
+function cleanAnimeTitle(raw) {
+  let s = String(raw || '')
+    .replace(/\s*[(\（](?:アニメ|テレビアニメ|TVアニメ|漫画|小説|ゲーム|映画|テレビドラマ|日本の[^)\）]+)[)\）]\s*$/g, '')
+    .replace(/^『(.+)』$/, '$1')
+    .replace(/^「(.+)」$/, '$1')
+    .trim();
+  if (s.length > 28) {
+    s = s.replace(/〜[^〜]{12,}〜$/, '').trim();
+  }
+  return s;
+}
+
+// ソース0: Spotifyの曲名・アルバム名に『作品名』OP/ED が明記されている場合のみ抽出
 function lookupFromTrackName(track) {
-  const texts = [track.name, track.album];
-  for (const text of texts) {
-    const found = extractTieups(text || '').filter((r) => norm(r.raw) !== norm(cleanTitle(track.name)));
-    if (found.length) {
-      return { entries: [{ anime: found[0].anime, theme: found[0].theme }], source: 'Spotify曲名解析' };
+  const nTitle = norm(cleanTitle(track.name));
+  const re = /(?:(アニメ|TVアニメ|テレビアニメ|劇場版|映画)\s*)?[『「]([^『』「」]{2,60})[』」]\s*([^『』「」()（）\n]{0,20}?)\s*(?:の|で)?\s*(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング)(?:テーマ|主題歌|曲)?\s*(?:第)?(\d{1,2})?/gi;
+  for (const text of [track.name, track.album]) {
+    if (!text) continue;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const hasContext = !!m[1] || text.includes(`『${m[2]}』`);
+      if (!hasContext) continue;
+      let anime = cleanAnimeTitle(m[2]);
+      if (!anime || norm(anime) === nTitle) continue;
+      const mid = (m[3] || '').trim().replace(/^[のでは\s]+/, '').replace(/[のでは\s・]+$/, '');
+      if (mid && mid.length <= 15 && /(編|期|シーズン|章|クール|season|シリーズ|第\d+|\d(nd|rd|th))/i.test(mid)) {
+        anime = `${anime} ${mid}`;
+      }
+      const theme = parseThemeType(`${m[3] || ''} ${m[4]} ${m[5] || ''}`) || '主題歌';
+      return { entries: [{ anime, theme }], source: 'Spotify曲名解析', _fromMemory: true };
     }
   }
   return null;
@@ -824,6 +892,10 @@ function lookupFromTrackName(track) {
 // ソース1: AnimeThemes API
 async function lookupAnimeThemes(track) {
   const title = cleanTitle(track.name);
+  const nTitle = norm(title);
+  // 記号のみ等で正規化後が短すぎる場合は誤爆防止のためスキップ
+  if (!nTitle || nTitle.length < 2 || !/[\p{L}\p{N}]/u.test(nTitle)) return null;
+
   const params = new URLSearchParams({
     q: title,
     'fields[search]': 'songs',
@@ -832,15 +904,14 @@ async function lookupAnimeThemes(track) {
   const url = `${ANIMETHEMES_BASE}/search?${params.toString()}`;
   let res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
   if (res.status === 429) {
-    await sleep(10000);
+    await sleep(5000);
     res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
   }
   if (!res.ok) throw new Error(`AnimeThemes ${res.status}`);
   const data = await res.json();
   const songs = data?.search?.songs || [];
 
-  const nTitle = norm(title);
-  const nArtists = track.artists.map(norm).filter(Boolean);
+  const nArtists = getArtistVariants(track).map(norm).filter(Boolean);
   let best = null;
   let bestScore = 0;
 
@@ -850,7 +921,7 @@ async function lookupAnimeThemes(track) {
     if (!songTitle) continue;
     let score = 0;
     if (songTitle === nTitle) score += 10;
-    else if (songTitle.includes(nTitle) || nTitle.includes(songTitle)) score += 3;
+    else if (songTitle.length >= 4 && nTitle.length >= 4 && (songTitle.includes(nTitle) || nTitle.includes(songTitle))) score += 3;
     else continue;
     const songArtists = (song.artists || []).map((a) => norm(a.name)).filter(Boolean);
     const artistMatch = songArtists.some((sa) => nArtists.some((na) => sa === na || sa.includes(na) || na.includes(sa)));
@@ -858,9 +929,8 @@ async function lookupAnimeThemes(track) {
     if (score > bestScore) { bestScore = score; best = { song, artistMatch }; }
   }
   if (!best) return null;
-  // 誤判定防止: タイトル完全一致＋アーティスト一致、またはタイトル完全一致かつ十分に固有な曲名
-  const strong = bestScore >= 13; // タイトル一致（部分一致含む）＋アーティスト一致
-  const weak = bestScore === 10 && nTitle.length >= 6;
+  const strong = bestScore >= 13; // タイトル一致＋アーティスト一致
+  const weak = bestScore === 10 && nTitle.length >= 7;
   if (!strong && !weak) return null;
 
   const entries = [];
@@ -878,65 +948,217 @@ async function lookupAnimeThemes(track) {
   return { entries, source: 'AnimeThemes', confidence: strong ? 'high' : 'low' };
 }
 
-// ソース2: Wikipedia日本語版 検索APIのスニペット解析
-async function lookupWikipedia(track) {
-  const title = cleanTitle(track.name);
-  const artist = track.artists[0] || '';
-  const params = new URLSearchParams({
-    action: 'query',
-    list: 'search',
-    srsearch: `${title} ${artist} アニメ オープニング OR エンディング`,
-    srlimit: '6',
-    srprop: 'snippet',
-    format: 'json',
-    origin: '*',
-  });
-  const res = await fetchWithTimeout(`${WIKIPEDIA_API}?${params.toString()}`);
-  if (!res.ok) throw new Error(`Wikipedia ${res.status}`);
-  const data = await res.json();
-  const results = data?.query?.search || [];
+// Wikitextから不要なマークアップや脚注タグを除去
+function stripWikitext(wt) {
+  return String(wt || '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<ref[^>]*\/>/gi, '')
+    .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, '')
+    .replace(/\{\{(?:R|Sfn|Efn|efn|脚注ヘルプ|要出典|出典の明記)[^{}]*\}\}/gi, '')
+    .replace(/<nowiki>([\s\S]*?)<\/nowiki>/gi, '$1')
+    .replace(/\[\[(?:[^|\]]*\|)?([^\]]+)\]\]/g, '$1')
+    .replace(/'''|''/g, '');
+}
 
-  const nTitle = norm(title);
-  const nArtist = norm(artist);
+function isTargetSong(candidateSong, titleNorms) {
+  const n = norm(candidateSong);
+  if (!n) return false;
+  return titleNorms.some((tn) => tn && (n === tn || (n.length >= 6 && tn.length >= 6 && (n.includes(tn) || tn.includes(n)))));
+}
+
+// Wikipedia記事1ページ分のWikitextから該当曲のアニメタイアップを抽出
+function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
+  if (!rawWt) return null;
+  const basePageTitle = cleanAnimeTitle(pageTitle);
+  const isDisambigOrList = /(一覧|ディスコグラフィ|の楽曲|のアルバム|のシングル|年表)/.test(pageTitle);
+  const isPersonOrGroup = artistNorms.some((an) => an && norm(basePageTitle) === an) ||
+    /の(女性|男性|男女混合)?(声優|歌手|ミュージシャン|バンド|アイドル|グループ|ロックバンド|シンガーソングライター|音楽ユニット)/.test(rawWt.slice(0, 600));
   const candidates = [];
+  const cleaned = stripWikitext(rawWt);
 
-  for (const r of results) {
-    const snippet = htmlToText(r.snippet || '');
-    const pageTitle = r.title || '';
-    const haystack = norm(snippet + pageTitle);
-    // 曲名がスニペットかページ名に含まれていない結果は無関係とみなす
-    if (!nTitle || !haystack.includes(nTitle)) continue;
-
-    // パターンA: 『アニメ名』…のオープニング
-    for (const t of extractTieups(snippet)) {
-      const nAnime = norm(t.raw);
-      if (!nAnime || nAnime === nTitle || nAnime === nArtist) continue;
-      candidates.push({ anime: t.anime, theme: t.theme, score: t.animeContext ? 3 : 2 });
-    }
-
-    // パターンB: ページがアニメ作品で「オープニングテーマ「曲名」」と書かれている
-    if (!/(一覧|ディスコグラフィ|作品|シングル|アルバム|楽曲)/.test(pageTitle) &&
-        norm(pageTitle) !== nTitle && norm(pageTitle) !== nArtist) {
-      const reB = new RegExp(`(オープニング|エンディング|主題歌|挿入歌)(?:テーマ)?\\s*(\\d{1,2})?[^「『」』]{0,10}[「『]${escRegExp(title)}[」』]`, 'i');
-      const mB = snippet.match(reB);
-      if (mB) {
-        const anime = pageTitle.replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim();
-        if (anime) candidates.push({ anime, theme: themeFromKeyword(mB[1], mB[2]), score: 1 });
+  // パターン1: アニメ作品ページの「=== 主題歌 ===」等の定義リスト（; 「曲名」 \n : 歌手によるOP/ED）
+  if (!isDisambigOrList && !isPersonOrGroup) {
+    let currentSubWork = '';
+    const lines = cleaned.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      const hMatch = line.match(/^(={2,4})\s*(.+?)\s*\1$/);
+      if (hMatch) {
+        const level = hMatch[1].length;
+        const h = hMatch[2].trim();
+        if (level === 2) currentSubWork = '';
+        const subInParen = h.match(/^(?:主題歌|挿入歌|音楽)[（(](.+?)[）)]$/);
+        if (subInParen && !/^(テレビアニメ|TVアニメ|アニメ|映画|劇場版)$/.test(subInParen[1])) {
+          currentSubWork = subInParen[1].includes(basePageTitle) ? subInParen[1] : `${basePageTitle} ${subInParen[1]}`;
+        } else if (h.includes(basePageTitle) && h !== basePageTitle) {
+          currentSubWork = cleanAnimeTitle(h);
+        }
+        continue;
+      }
+      const songMatches = [...line.matchAll(/「([^「」]{1,80})」/g)];
+      if (songMatches.length && (line.startsWith(';') || line.startsWith('*') || line.startsWith('「'))) {
+        const matchedSong = songMatches.find((m) => isTargetSong(m[1], titleNorms));
+        if (matchedSong) {
+          let desc = line.slice(matchedSong.index + matchedSong[0].length);
+          for (let j = 1; j <= 2 && i + j < lines.length; j++) {
+            const nl = lines[i + j].trim();
+            if (nl.startsWith(';') || nl.startsWith('=') || /^[*#]\s*「/.test(nl)) break;
+            desc += ' ' + nl;
+          }
+          const explicitAnime = desc.match(/(?:アニメ|映画|劇場版)[^『「\n]{0,15}『([^『』]{1,80})』/);
+          const theme = parseThemeType(desc);
+          if (theme && !/テレビドラマ|実写映画|CM/.test(desc)) {
+            const anime = cleanAnimeTitle(explicitAnime ? explicitAnime[1] : (currentSubWork || basePageTitle));
+            const artistHit = artistNorms.some((an) => an && norm(desc).includes(an));
+            candidates.push({ anime, theme, score: artistHit ? 12 : 10, animePage: pageTitle });
+          }
+        }
       }
     }
   }
-  if (!candidates.length) return null;
+
+  // パターン2: 本文・表・脚注内の「曲名」と『アニメ名』のペア解析
+  const flatText = stripWikitext(rawWt.replace(/<ref[^>]*>([\s\S]*?)<\/ref>/gi, ' $1 '));
+  for (const m of flatText.matchAll(/[「“"]([^「」“”"\n]{1,60})[」”"][^「」\n]{0,60}?(?:アニメ|劇場版|映画)[^『「\n]{0,15}[『「]([^『』「」\n]{1,80})[』」][^。\n]{0,30}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング|テーマ・ソング)(?:テーマ|主題歌|曲)?/gi)) {
+    if (isTargetSong(m[1], titleNorms)) {
+      const theme = parseThemeType(m[0]);
+      if (theme) candidates.push({ anime: cleanAnimeTitle(m[2]), theme, score: 11 });
+    }
+  }
+  for (const m of flatText.matchAll(/(?:アニメ|劇場版)[^『「\n]{0,15}[『「]([^『』「」\n]{1,80})[』」][^。\n]{0,35}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング|テーマ・ソング)(?:テーマ|主題歌|曲)?[^「“"\n]{0,25}[「“"]([^「」“”"\n]{1,60})[」”"]/gi)) {
+    if (isTargetSong(m[3], titleNorms)) {
+      const theme = parseThemeType(m[0]);
+      if (theme) candidates.push({ anime: cleanAnimeTitle(m[1]), theme, score: 11 });
+    }
+  }
+
+  // パターン3: Wikitableの行（|-）や箇条書き内で曲名とアニメ『作品名』が同居
+  const blocks = cleaned.split(/\n\|-|\n(?=[*#;])/);
+  for (const b of blocks) {
+    if (b.length > 600) continue;
+    const tokens = [...b.matchAll(/(?:「([^「」\n]+)」|^\|+\s*([^\n|]+)|^#[*:]?\s*([^\n\[]+))/gm)]
+      .map((x) => (x[1] || x[2] || x[3] || '').trim().replace(/\s*\[\d+:\d+\]\s*$/, ''));
+    if (tokens.some((tk) => isTargetSong(tk, titleNorms))) {
+      const am = b.match(/(?:アニメ|劇場版)[^『\n]{0,15}『([^『』\n]{1,80})』[^。\n]{0,30}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング)/i);
+      if (am) {
+        const theme = parseThemeType(am[0]);
+        if (theme) candidates.push({ anime: cleanAnimeTitle(am[1]), theme, score: 9 });
+      }
+    }
+  }
+
   candidates.sort((a, b) => b.score - a.score);
-  const top = candidates[0];
-  return { entries: [{ anime: top.anime, theme: top.theme }], source: 'Wikipedia' };
+  return candidates[0] || null;
 }
 
-// 総合検索：曲名解析 → AnimeThemes → Wikipedia（日本語タイトル補完）
+async function wikiApiFetch(paramsObj) {
+  const params = new URLSearchParams({ ...paramsObj, format: 'json', origin: '*' });
+  const url = `${WIKIPEDIA_API}?${params.toString()}`;
+  let res = await fetchWithTimeout(url);
+  if (res.status === 429) {
+    await sleep(3000);
+    res = await fetchWithTimeout(url);
+  }
+  if (!res.ok) throw new Error(`Wikipedia ${res.status}`);
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('Wikipedia rate limited');
+  }
+}
+
+// ソース2: Wikipedia日本語版 記事Wikitext＆検索解析
+async function lookupWikipedia(track) {
+  const titleVars = getTitleVariants(track);
+  const artistVars = getArtistVariants(track);
+  const titleNorms = titleVars.map(norm).filter(Boolean);
+  const artistNorms = artistVars.map(norm).filter(Boolean);
+  if (!titleNorms.length) return null;
+
+  // (1) 直近ヒットしたアニメ記事キャッシュにあれば通信ゼロで即座に返す（OP/EDペア曲の高速判定）
+  for (const pageTitle of state.recentAnimePages) {
+    const wt = state.wikiPageCache.get(pageTitle);
+    const hit = extractFromWikitext(pageTitle, wt, titleNorms, artistNorms);
+    if (hit && hit.score >= 10) {
+      return { entries: [{ anime: hit.anime, theme: hit.theme }], source: 'Wikipedia', _fromMemory: true };
+    }
+  }
+
+  // (2) 候補ページタイトルを収集
+  const pageSet = new Set();
+  pageSet.add(titleVars[0]);
+  if (artistVars[0]) {
+    pageSet.add(`${titleVars[0]} (${artistVars[0]}の曲)`);
+    pageSet.add(artistVars[0]);
+  }
+
+  const q1 = artistVars[0] ? `"${titleVars[0]}" "${artistVars[0]}"` : `"${titleVars[0]}" アニメ`;
+  const sData1 = await wikiApiFetch({ action: 'query', list: 'search', srsearch: q1, srlimit: '6', srprop: 'snippet' });
+  let searchHits = sData1?.query?.search || [];
+  if (!searchHits.length && artistVars[0]) {
+    const q2 = `${titleVars[0]} "${artistVars[0]}"`;
+    const sData2 = await wikiApiFetch({ action: 'query', list: 'search', srsearch: q2, srlimit: '6', srprop: 'snippet' });
+    searchHits = sData2?.query?.search || [];
+  }
+  for (const r of searchHits) pageSet.add(r.title);
+
+  const candidateTitles = [...pageSet].slice(0, 8);
+  const uncached = candidateTitles.filter((t) => !state.wikiPageCache.has(t));
+
+  // (3) 未キャッシュのページ本文（Wikitext）を1回のバッチリクエストで取得
+  if (uncached.length) {
+    const revData = await wikiApiFetch({
+      action: 'query',
+      titles: uncached.join('|'),
+      prop: 'revisions',
+      rvprop: 'content',
+      redirects: '1',
+    });
+    const redirects = revData?.query?.redirects || [];
+    const pages = Object.values(revData?.query?.pages || {});
+    for (const p of pages) {
+      const wt = (!p.missing && p.revisions?.[0]) ? (p.revisions[0]['*'] || p.revisions[0]?.slots?.main?.['*'] || '') : '';
+      state.wikiPageCache.set(p.title, wt);
+    }
+    for (const rd of redirects) {
+      if (state.wikiPageCache.has(rd.to)) {
+        state.wikiPageCache.set(rd.from, state.wikiPageCache.get(rd.to));
+      }
+    }
+  }
+
+  // (4) 各ページのWikitextを解析して最もスコアの高いタイアップ情報を採用
+  let best = null;
+  for (const t of candidateTitles) {
+    const wt = state.wikiPageCache.get(t) || '';
+    const hit = extractFromWikitext(t, wt, titleNorms, artistNorms);
+    if (hit && (!best || hit.score > best.score)) best = hit;
+  }
+  if (!best) return null;
+
+  // ヒットしたアニメ記事を直近リストに記憶
+  if (best.animePage) {
+    state.recentAnimePages = [best.animePage, ...state.recentAnimePages.filter((p) => p !== best.animePage)].slice(0, 15);
+  }
+  return { entries: [{ anime: best.anime, theme: best.theme }], source: 'Wikipedia' };
+}
+
+// 総合検索：曲名解析 → Wikipedia（日本語記事解析） → AnimeThemes
 async function lookupAnime(track) {
   if (track.isLocal && !track.name) return { entries: [], none: true, source: '-' };
 
   const fromName = lookupFromTrackName(track);
   if (fromName) return fromName;
+
+  let wiki = null;
+  let wikiError = null;
+  try {
+    wiki = await lookupWikipedia(track);
+    if (wiki && wiki._fromMemory) return wiki;
+  } catch (e) {
+    wikiError = e;
+  }
 
   let at = null;
   let atError = null;
@@ -946,31 +1168,21 @@ async function lookupAnime(track) {
     atError = e;
   }
 
-  let wiki = null;
-  let wikiError = null;
-  try {
-    wiki = await lookupWikipedia(track);
-  } catch (e) {
-    wikiError = e;
-  }
-
   if (at && wiki) {
-    // AnimeThemesの英語/ローマ字名をWikipediaの日本語名で補完（種別が矛盾しない場合）
     const atType = themeClass(at.entries[0].theme);
     const wType = themeClass(wiki.entries[0].theme);
     if (!wType || !atType || atType === wType) {
       const entries = at.entries.map((e, i) => (i === 0
-        ? { anime: wiki.entries[0].anime, theme: e.theme || wiki.entries[0].theme, alt: e.anime }
+        ? { anime: wiki.entries[0].anime, theme: wiki.entries[0].theme || e.theme, alt: e.anime }
         : e));
-      return { entries, source: 'AnimeThemes + Wikipedia' };
+      return { entries, source: 'Wikipedia + AnimeThemes' };
     }
-    return at.confidence === 'high' ? at : wiki;
+    return wiki;
   }
-  if (at && at.confidence === 'high') return at;
   if (wiki) return wiki;
   if (at) return at;
-  // 両方とも通信エラーならキャッシュせず再試行可能にする
-  if (atError && wikiError) throw atError;
+  // Wikipediaが通信エラーやレート制限で失敗した場合は「情報なし」としてキャッシュせずエラー扱いにする
+  if (wikiError || atError) throw (wikiError || atError);
   return { entries: [], none: true, source: '自動検索' };
 }
 
@@ -1051,8 +1263,28 @@ function rescanPlaylist() {
 }
 
 /* ==========================================================
-   12. 再生制御（Spotify Connect）
+   12. 再生制御・デバイス選択・音量制御（Spotify Connect）
    ========================================================== */
+
+function deviceIcon(type) {
+  const t = String(type || '').toLowerCase();
+  if (t.includes('computer')) return '💻';
+  if (t.includes('smartphone') || t.includes('tablet')) return '📱';
+  if (t.includes('tv') || t.includes('avr') || t.includes('stb') || t.includes('castvideo')) return '📺';
+  if (t.includes('game')) return '🎮';
+  return '🔊';
+}
+
+function deviceTypeLabel(type) {
+  const t = String(type || '').toLowerCase();
+  if (t.includes('computer')) return 'パソコン';
+  if (t.includes('smartphone')) return 'スマートフォン';
+  if (t.includes('tablet')) return 'タブレット';
+  if (t.includes('avr')) return 'AVアンプ / ホームシアター';
+  if (t.includes('tv') || t.includes('stb') || t.includes('castvideo')) return 'テレビ / 映像機器';
+  if (t.includes('speaker') || t.includes('castaudio')) return 'スピーカー';
+  return type || 'デバイス';
+}
 
 // 曲を再生（positionMs指定で途中から）
 async function playTrack(track, positionMs = 0) {
@@ -1070,8 +1302,9 @@ async function playTrack(track, positionMs = 0) {
     : { uris: [track.uri] };
   if (positionMs > 0) contextBody.position_ms = Math.floor(positionMs);
 
+  const devQuery = state.selectedDeviceId ? `?device_id=${encodeURIComponent(state.selectedDeviceId)}` : '';
   try {
-    await api('/me/player/play', { method: 'PUT', body: contextBody });
+    await api(`/me/player/play${devQuery}`, { method: 'PUT', body: contextBody });
     onPlayStarted(track, positionMs);
   } catch (e) {
     if (e.status === 404) {
@@ -1088,6 +1321,7 @@ async function handlePlay404(track, body, positionMs, usedContext) {
   try {
     const d = await api('/me/player/devices');
     devices = d?.devices || [];
+    state.devices = devices;
   } catch { devices = []; }
 
   const usable = devices.filter((d) => !d.is_restricted);
@@ -1095,17 +1329,17 @@ async function handlePlay404(track, body, positionMs, usedContext) {
     showNoDeviceNotice(track);
     return;
   }
+  const preferred = usable.find((d) => d.id === state.selectedDeviceId);
   const active = usable.find((d) => d.is_active);
+  const target = preferred || active || usable.find((d) => /smartphone|computer/i.test(d.type)) || usable[0];
   try {
-    if (!active) {
-      // 起動済みだが非アクティブなデバイスを指定して再生
-      const target = usable.find((d) => /smartphone/i.test(d.type)) || usable[0];
+    if (!active || (preferred && preferred.id !== active.id)) {
       await api(`/me/player/play?device_id=${encodeURIComponent(target.id)}`, { method: 'PUT', body });
     } else if (usedContext) {
       // コンテキスト（プレイリスト）が再生不可 → 単曲で再生
       const single = { uris: [track.uri] };
       if (positionMs > 0) single.position_ms = Math.floor(positionMs);
-      await api('/me/player/play', { method: 'PUT', body: single });
+      await api(`/me/player/play?device_id=${encodeURIComponent(target.id)}`, { method: 'PUT', body: single });
     } else {
       throw new ApiError(404, '再生できませんでした');
     }
@@ -1129,6 +1363,149 @@ function onPlayStarted(track, positionMs) {
   onPlaybackTrackChanged(track);
   updatePlayerUI();
   schedulePoll(800);
+}
+
+// デバイス一覧の取得とモーダル表示
+async function openDeviceModal() {
+  openModal('deviceModal');
+  await loadDevices();
+}
+
+async function loadDevices() {
+  const listEl = $('#deviceList');
+  if (listEl) listEl.innerHTML = '<li class="loading"><div class="spinner"></div>デバイスを検索中...</li>';
+  try {
+    const data = await api('/me/player/devices');
+    state.devices = data?.devices || [];
+    const active = state.devices.find((d) => d.is_active);
+    if (active && state.playback) state.playback.device = active;
+    renderDeviceList();
+    updatePlayerUI();
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<li class="muted small center" style="padding:14px">取得に失敗しました: ${esc(e.message)}</li>`;
+  }
+}
+
+function renderDeviceList() {
+  const listEl = $('#deviceList');
+  if (!listEl) return;
+  if (!state.devices.length) {
+    listEl.innerHTML = '<li class="muted small center" style="padding:16px">起動中のSpotifyデバイスが見つかりません。<br>スマホやPCでSpotifyアプリを開いてください。</li>';
+    return;
+  }
+  const activeId = state.playback?.device?.id;
+  listEl.innerHTML = state.devices.map((d) => {
+    const isCurrent = d.is_active || d.id === activeId;
+    const isSelected = !isCurrent && d.id === state.selectedDeviceId;
+    const status = isCurrent ? '● 接続中' : (isSelected ? '選択中' : (d.is_restricted ? '操作不可' : '切替'));
+    return `
+      <li class="device-item ${isCurrent ? 'active' : ''}" data-device-id="${esc(d.id)}">
+        <div class="device-item-main">
+          <span class="device-item-icon">${deviceIcon(d.type)}</span>
+          <div>
+            <div class="device-item-name">${esc(d.name)}</div>
+            <div class="device-item-sub">${esc(deviceTypeLabel(d.type))}${typeof d.volume_percent === 'number' ? ` ・ 音量 ${d.volume_percent}%` : ''}</div>
+          </div>
+        </div>
+        <span class="device-item-status">${status}</span>
+      </li>`;
+  }).join('');
+}
+
+// 再生先デバイスを切り替え（Spotify Connect トランスファー）
+async function selectDevice(deviceId) {
+  const device = state.devices.find((d) => d.id === deviceId);
+  if (!device) return;
+  if (device.is_restricted) {
+    toast('このデバイスはWeb APIからの操作が制限されています', 'error');
+    return;
+  }
+  state.selectedDeviceId = device.id;
+  localStorage.setItem(LS.selectedDevice, device.id);
+
+  try {
+    const shouldPlay = !!state.playback?.isPlaying;
+    await api('/me/player', {
+      method: 'PUT',
+      body: { device_ids: [device.id], play: shouldPlay },
+    });
+    state.devices.forEach((d) => { d.is_active = (d.id === device.id); });
+    if (!state.playback) {
+      state.playback = { isPlaying: shouldPlay, progressMs: 0, durationMs: 0, fetchedAt: Date.now(), track: null, device };
+    } else {
+      state.playback.device = device;
+    }
+    renderDeviceList();
+    updatePlayerUI();
+    toast(`🎧 再生先を「${device.name}」に切り替えました`, 'success', 2200);
+    schedulePoll(900);
+  } catch (e) {
+    handlePlaybackError(e);
+  }
+}
+
+// 音量変更（0〜100）
+let volumeCommitTimer = null;
+function setVolume(percent, commit = true) {
+  const vol = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  if (vol > 0) state.lastVolume = vol;
+  if (state.playback?.device) {
+    state.playback.device.volume_percent = vol;
+  }
+  updateVolumeUI(vol);
+
+  if (!commit) return;
+  clearTimeout(volumeCommitTimer);
+  volumeCommitTimer = setTimeout(async () => {
+    const devId = state.playback?.device?.id || state.selectedDeviceId;
+    const devQuery = devId ? `&device_id=${encodeURIComponent(devId)}` : '';
+    try {
+      await api(`/me/player/volume?volume_percent=${vol}${devQuery}`, { method: 'PUT' });
+      const d = state.devices.find((x) => x.id === devId);
+      if (d) { d.volume_percent = vol; renderDeviceList(); }
+    } catch (e) {
+      if (e.status === 403) {
+        toast('このデバイス（ホームシアターや一部スマホ等）は外部からの音量変更に対応していません', 'error', 4000);
+      } else {
+        handlePlaybackError(e);
+      }
+    }
+  }, 150);
+}
+
+function toggleMute() {
+  const cur = state.playback?.device?.volume_percent ?? 50;
+  if (cur > 0) {
+    state.lastVolume = cur;
+    setVolume(0, true);
+  } else {
+    setVolume(state.lastVolume || 50, true);
+  }
+}
+
+function updateVolumeUI(overrideVol = null) {
+  const dev = state.playback?.device || state.devices.find((d) => d.id === state.selectedDeviceId) || null;
+  const vol = overrideVol !== null ? overrideVol : (typeof dev?.volume_percent === 'number' ? dev.volume_percent : 50);
+  const supportsVol = dev ? dev.supports_volume !== false : true;
+  const icon = vol === 0 ? '🔇' : (vol < 50 ? '🔉' : '🔊');
+
+  ['#btnMute', '#btnModalMute'].forEach((sel) => {
+    const btn = $(sel);
+    if (btn) btn.textContent = icon;
+  });
+  if (!state.volumeDragging) {
+    ['#volumeBar', '#modalVolumeBar'].forEach((sel) => {
+      const bar = $(sel);
+      if (bar) {
+        bar.value = vol;
+        bar.style.setProperty('--vol-pct', `${vol}%`);
+        bar.disabled = !supportsVol;
+      }
+    });
+  }
+  const valEl = $('#volumeValue');
+  if (valEl) valEl.textContent = supportsVol ? `${vol}%` : '固定';
+  $('#volumeUnsupportedNote')?.classList.toggle('hidden', supportsVol);
 }
 
 // 再生系エラーの共通処理
@@ -1328,7 +1705,11 @@ function updatePlayerUI() {
   }
   $('#btnPlayPause').textContent = pb?.isPlaying ? '⏸' : '▶';
   $('#btnPlayPause').setAttribute('aria-label', pb?.isPlaying ? '一時停止' : '再生');
-  $('#deviceName').textContent = pb?.device ? `🔊 ${pb.device.name}` : 'デバイス未接続';
+  const dev = pb?.device || state.devices.find((d) => d.id === state.selectedDeviceId) || null;
+  $('#deviceIcon').textContent = dev ? deviceIcon(dev.type) : '🔊';
+  $('#deviceName').textContent = dev ? dev.name : 'デバイス選択';
+  $('#btnDevices').classList.toggle('active', !!pb?.device);
+  updateVolumeUI();
   updateProgressUI();
 }
 
@@ -1830,6 +2211,42 @@ function bindUI() {
     const dur = state.playback?.durationMs || 0;
     if (!dur) { toast('再生中の曲がありません'); return; }
     seekTo((seekBar.value / 1000) * dur);
+  });
+
+  // デバイス選択・音量調整
+  $('#btnDevices').addEventListener('click', openDeviceModal);
+  $('#btnRefreshDevices').addEventListener('click', loadDevices);
+  $('#deviceList').addEventListener('click', (e) => {
+    const item = e.target.closest('[data-device-id]');
+    if (item) selectDevice(item.dataset.deviceId);
+  });
+  $('#btnMute').addEventListener('click', toggleMute);
+  $('#btnModalMute').addEventListener('click', toggleMute);
+  $('#btnVolDown').addEventListener('click', () => {
+    const cur = Number($('#modalVolumeBar').value) || 0;
+    setVolume(cur - 10, true);
+  });
+  $('#btnVolUp').addEventListener('click', () => {
+    const cur = Number($('#modalVolumeBar').value) || 0;
+    setVolume(cur + 10, true);
+  });
+  ['#volumeBar', '#modalVolumeBar'].forEach((sel) => {
+    const bar = $(sel);
+    bar.addEventListener('input', () => {
+      state.volumeDragging = true;
+      const v = Number(bar.value) || 0;
+      ['#volumeBar', '#modalVolumeBar'].forEach((s2) => {
+        const b2 = $(s2);
+        if (b2) { b2.value = v; b2.style.setProperty('--vol-pct', `${v}%`); }
+      });
+      const valEl = $('#volumeValue');
+      if (valEl) valEl.textContent = `${v}%`;
+      setVolume(v, false);
+    });
+    bar.addEventListener('change', () => {
+      state.volumeDragging = false;
+      setVolume(Number(bar.value) || 0, true);
+    });
   });
 
   // 歌詞パネル

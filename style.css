@@ -356,8 +356,50 @@ body.has-player .layout {
 .ctrl-btn.play { background: #fff; color: #000; width: 46px; height: 46px; font-size: 1.1rem; }
 .ctrl-btn.play:active { transform: scale(0.94); }
 .player-extra { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.volume-inline { display: flex; align-items: center; gap: 4px; width: 120px; flex-shrink: 0; }
+.volume-bar {
+  flex: 1; min-width: 60px; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 4px;
+  background: linear-gradient(to right, var(--green) var(--vol-pct, 50%), #4d4d4d var(--vol-pct, 50%));
+  outline: none; cursor: pointer;
+}
+.volume-bar::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; border: none; }
+.volume-bar::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #fff; border: none; }
+.device-btn {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 190px;
+  background: var(--bg-elev2); border: 1px solid var(--border); color: var(--text-sub);
+  padding: 5px 11px; border-radius: 999px; transition: background .15s, color .15s, border-color .15s;
+}
+.device-btn:hover { background: var(--bg-hover); color: var(--text); }
+.device-btn.active { color: var(--green); border-color: rgba(30,215,96,.45); background: rgba(30,215,96,.1); }
+.device-icon { font-size: 0.95rem; flex-shrink: 0; }
 .device-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #btnToggleLyrics.active { color: var(--green); background: rgba(30,215,96,.12); }
+
+/* ---------- デバイス＆音量モーダル ---------- */
+.volume-box {
+  background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.volume-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.9rem; font-weight: 700; margin-bottom: 8px; }
+.volume-value { color: var(--green); font-variant-numeric: tabular-nums; }
+.volume-controls { display: flex; align-items: center; gap: 8px; }
+.volume-controls .volume-bar { height: 6px; }
+.device-list-head { display: flex; align-items: center; justify-content: space-between; margin: 6px 0 8px; }
+.device-list-head h3 { margin: 0; }
+.device-list { list-style: none; padding: 0; margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; }
+.device-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-radius: 10px; background: var(--bg-elev2); border: 1px solid var(--border);
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.device-item:hover { background: var(--bg-hover); }
+.device-item.active { border-color: var(--green); background: rgba(30,215,96,.1); }
+.device-item-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.device-item-icon { font-size: 1.3rem; flex-shrink: 0; }
+.device-item-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-item.active .device-item-name { color: var(--green); }
+.device-item-sub { font-size: 0.78rem; color: var(--text-sub); }
+.device-item-status { font-size: 0.78rem; font-weight: 700; color: var(--green); white-space: nowrap; }
 
 /* ---------- ローディング ---------- */
 .loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-sub); }
@@ -454,8 +496,14 @@ body.has-player .layout {
   .lyric-line { font-size: 1.35rem; }
 
   .player-main { grid-template-columns: minmax(0, 1fr) auto; }
-  .player-extra { position: absolute; right: 8px; top: -46px; }
+  .player-extra { position: absolute; right: 8px; top: -46px; gap: 6px; }
+  .player-extra .volume-inline { display: none; }
   .player-extra .device-name { display: none; }
+  .player-extra .device-btn {
+    width: 40px; height: 40px; padding: 0; border-radius: 50%; justify-content: center;
+    background: rgba(30,30,30,.95); border: 1px solid var(--border);
+  }
+  .player-extra .device-btn.active { border-color: var(--green); }
   .player-extra .icon-btn { background: rgba(30,30,30,.95); border: 1px solid var(--border); }
   .controls { gap: 4px; }
   .ctrl-btn { width: 38px; height: 38px; font-size: 1.05rem; }

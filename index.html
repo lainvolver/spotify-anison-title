@@ -164,7 +164,14 @@
         <button class="ctrl-btn" id="btnNext" aria-label="次の曲">⏭</button>
       </div>
       <div class="player-extra">
-        <span class="device-name small muted" id="deviceName"></span>
+        <div class="volume-inline" id="volumeInline">
+          <button class="icon-btn small" id="btnMute" title="ミュート切替" aria-label="ミュート切替">🔊</button>
+          <input type="range" id="volumeBar" class="volume-bar" min="0" max="100" value="50" step="1" aria-label="音量" />
+        </div>
+        <button class="device-btn" id="btnDevices" type="button" title="再生デバイスと音量" aria-label="再生デバイスと音量">
+          <span class="device-icon" id="deviceIcon">🔊</span>
+          <span class="device-name small" id="deviceName">デバイス選択</span>
+        </button>
         <button class="icon-btn" id="btnToggleLyrics" title="歌詞" aria-label="歌詞">🎤</button>
       </div>
     </div>
@@ -279,6 +286,43 @@
           <button class="btn btn-ghost" id="btnEditNone" title="アニメ曲ではないとして保存">アニメ曲ではない</button>
           <button class="btn btn-ghost" id="btnEditReset" title="手動編集を破棄して自動判定し直す">自動判定に戻す</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== モーダル: 再生デバイス＆音量 ===== -->
+  <div class="modal hidden" id="deviceModal" role="dialog" aria-modal="true" aria-labelledby="deviceTitle">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box small-box">
+      <div class="modal-head">
+        <h2 id="deviceTitle">🎧 再生デバイス＆音量</h2>
+        <button class="icon-btn" data-close aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="volume-box">
+          <div class="volume-head">
+            <span>音量</span>
+            <span class="volume-value" id="volumeValue">--%</span>
+          </div>
+          <div class="volume-controls">
+            <button class="icon-btn small" id="btnModalMute" type="button" title="ミュート切替" aria-label="ミュート切替">🔊</button>
+            <button class="btn btn-ghost small" id="btnVolDown" type="button" aria-label="音量を下げる">−10</button>
+            <input type="range" id="modalVolumeBar" class="volume-bar" min="0" max="100" value="50" step="1" aria-label="音量スライダー" />
+            <button class="btn btn-ghost small" id="btnVolUp" type="button" aria-label="音量を上げる">＋10</button>
+          </div>
+          <p class="small muted hidden" id="volumeUnsupportedNote">
+            ※現在のデバイスはアプリからの音量変更に対応していない場合があります。
+          </p>
+        </div>
+
+        <div class="device-list-head">
+          <h3>利用可能なデバイス</h3>
+          <button class="btn btn-ghost small" id="btnRefreshDevices" type="button">🔄 更新</button>
+        </div>
+        <ul class="device-list" id="deviceList"></ul>
+        <p class="small muted">
+          ※一覧に出ない場合は、使いたいスマホやPCでSpotifyアプリを起動して何か1曲再生してから「更新」を押してください。
+        </p>
       </div>
     </div>
   </div>
