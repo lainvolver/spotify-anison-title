@@ -21,6 +21,7 @@ const SCOPES = [
   'user-read-playback-state',
   'user-modify-playback-state',
   'user-read-currently-playing',
+  'user-library-read', // お気に入りの曲（Liked Songs）の閲覧
 ].join(' ');
 
 // リダイレクトURI = 現在開いているページのURL（クエリ・ハッシュ除く）
@@ -44,7 +45,11 @@ const LS = {
   lastPlaylist: 'av_last_playlist',
   autoScroll: 'av_auto_scroll',
   selectedDevice: 'av_selected_device',
+  lyricsCollapsed: 'av_lyrics_collapsed',
 };
+
+// お気に入りの曲（Liked Songs）を表す特別なプレイリストID
+const LIKED_ID = '__liked__';
 
 // 歌詞ハイライトの先読みオフセット（通信遅延の補正, ms）
 const LYRICS_LEAD_MS = 250;
@@ -488,13 +493,16 @@ async function loadPlaylists(reset = true) {
   if (!state.playlistsNext) return;
   try {
     const data = await api(state.playlistsNext);
-    if (reset) list.innerHTML = '';
+    if (reset) {
+      list.innerHTML = '';
+      list.appendChild(renderLikedItem()); // 先頭に「お気に入りの曲」
+    }
     const items = (data?.items || []).filter(Boolean);
     state.playlists.push(...items);
     state.playlistsNext = data?.next || null;
     items.forEach((pl) => list.appendChild(renderPlaylistItem(pl)));
     if (!state.playlists.length) {
-      list.innerHTML = '<li class="muted small center" style="padding:20px">プレイリストがありません</li>';
+      list.insertAdjacentHTML('beforeend', '<li class="muted small center" style="padding:20px">プレイリストがありません</li>');
     }
     $('#btnMorePlaylists').classList.toggle('hidden', !state.playlistsNext);
     highlightActivePlaylist();
@@ -517,6 +525,26 @@ function renderPlaylistItem(pl) {
       <div class="pi-sub">${esc(pl.owner?.display_name || '')}${total !== '' ? ` ・ ${total}曲` : ''}</div>
     </div>`;
   li.addEventListener('click', () => selectPlaylist(pl.id));
+  return li;
+}
+
+// 「お気に入りの曲」の項目（プレイリスト一覧の先頭に表示）
+function renderLikedItem() {
+  const li = document.createElement('li');
+  li.className = 'playlist-item liked-item';
+  li.dataset.id = LIKED_ID;
+  li.innerHTML = `
+    <div class="pi-cover liked-cover" aria-hidden="true">♥</div>
+    <div class="pi-text">
+      <div class="pi-name">お気に入りの曲</div>
+      <div class="pi-sub" id="likedSub">Liked Songs</div>
+    </div>`;
+  li.addEventListener('click', () => selectPlaylist(LIKED_ID));
+  // 曲数だけ軽量に取得（権限不足でも一覧表示は妨げない）
+  api('/me/tracks?limit=1').then((d) => {
+    const sub = li.querySelector('#likedSub');
+    if (sub && typeof d?.total === 'number') sub.textContent = `Liked Songs ・ ${d.total}曲`;
+  }).catch(() => {});
   return li;
 }
 
@@ -554,6 +582,10 @@ async function selectPlaylist(id) {
   $('#content').scrollTop = 0;
 
   try {
+    if (id === LIKED_ID) {
+      await loadLikedTracks(gen);
+      return;
+    }
     const data = await api(`/playlists/${encodeURIComponent(id)}`);
     if (gen !== state.loadGeneration) return;
     state.currentPlaylist = { id: data.id, name: data.name, uri: data.uri };
@@ -593,7 +625,9 @@ async function selectPlaylist(id) {
     if (gen !== state.loadGeneration) return;
     $('#plName').textContent = '読み込めませんでした';
     let msg = e.message;
-    if (e.status === 404 || e.status === 403) {
+    if (id === LIKED_ID && (e.status === 403 || e.status === 401)) {
+      msg = 'お気に入りの曲を読み込む権限がありません。一度ログアウトして再ログインしてください（新しい権限「ライブラリの閲覧」の許可が必要です）。';
+    } else if (e.status === 404 || e.status === 403) {
       msg = 'このプレイリストにはアクセスできません。Spotify公式／アルゴリズム生成のプレイリストや、他人の非公開プレイリストはAPIの制限により読み込めない場合があります。';
     }
     $('#plInfo').textContent = msg;
@@ -603,6 +637,32 @@ async function selectPlaylist(id) {
       $('#trackLoading').classList.add('hidden');
       markPlayingRow();
     }
+  }
+}
+
+// お気に入りの曲（Liked Songs）を読み込む
+async function loadLikedTracks(gen) {
+  state.currentPlaylist = { id: LIKED_ID, name: 'お気に入りの曲', uri: null, isLiked: true };
+  highlightActivePlaylist();
+  $('#plName').textContent = 'お気に入りの曲';
+  let page = await api('/me/tracks?limit=50');
+  if (gen !== state.loadGeneration) return;
+  $('#plInfo').textContent = `Liked Songs ・ ${page?.total ?? 0}曲`;
+  let pos = 0;
+  while (page && gen === state.loadGeneration) {
+    const newTracks = [];
+    for (const entry of page.items || []) {
+      const t = entry?.track || entry?.item;
+      const currentPos = pos++;
+      if (!t || (t.type && t.type !== 'track')) continue;
+      newTracks.push(buildTrack(t, currentPos));
+    }
+    state.tracks.push(...newTracks);
+    appendTrackRows(newTracks);
+    newTracks.forEach((t) => enqueueAnime(t));
+    updateAnimeProgress();
+    if (!page.next) break;
+    page = await api(page.next);
   }
 }
 
@@ -828,11 +888,16 @@ function getTitleVariants(track) {
     const count = clean.split(/\s+/).length;
     set.add(`${rep[1]}${count}`);
   }
-  if (track.album) {
-    const ca = cleanTitle(track.album);
-    if (ca && ca.length <= 25 && ca.toLowerCase() !== 'single') set.add(ca);
-  }
   return [...set];
+}
+
+// アルバム名（シングル名）を補助的なタイトル候補として返す
+// ※OP/ED両A面やカップリングでは別曲名のことがあるため、曲名一致より弱い扱いにする
+function getAlbumTitleVariant(track) {
+  if (!track.album) return '';
+  const ca = cleanTitle(track.album);
+  if (ca && ca.length <= 25 && ca.toLowerCase() !== 'single') return ca;
+  return '';
 }
 
 // アーティスト名からキャラ名・CV声優名などを分解抽出（日本人名の空白も除去）
@@ -872,6 +937,11 @@ function lookupFromTrackName(track) {
   const re = /(?:(アニメ|TVアニメ|テレビアニメ|劇場版|映画)\s*)?[『「]([^『』「」]{2,60})[』」]\s*([^『』「」()（）\n]{0,20}?)\s*(?:の|で)?\s*(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング)(?:テーマ|主題歌|曲)?\s*(?:第)?(\d{1,2})?/gi;
   for (const text of [track.name, track.album]) {
     if (!text) continue;
+    // アルバム名に別の曲名「〇〇」が明記されている場合（カップリング曲等）は、その曲のOP/ED情報なので採用しない
+    if (text === track.album && text !== track.name) {
+      const quoted = [...text.matchAll(/「([^「」]{1,60})」/g)].map((q) => norm(q[1]));
+      if (quoted.length && !quoted.includes(nTitle)) continue;
+    }
     let m;
     while ((m = re.exec(text)) !== null) {
       const hasContext = !!m[1] || text.includes(`『${m[2]}』`);
@@ -960,14 +1030,23 @@ function stripWikitext(wt) {
     .replace(/'''|''/g, '');
 }
 
-function isTargetSong(candidateSong, titleNorms) {
+// 候補曲名との一致度を返す（2: 曲名と一致 / 1: アルバム名等の弱い候補と一致 / 0: 不一致）
+function songMatchLevel(candidateSong, titleNorms, weakNorms = []) {
   const n = norm(candidateSong);
-  if (!n) return false;
-  return titleNorms.some((tn) => tn && (n === tn || (n.length >= 6 && tn.length >= 6 && (n.includes(tn) || tn.includes(n)))));
+  if (!n) return 0;
+  const hit = (tn) => tn && (n === tn || (n.length >= 6 && tn.length >= 6 && (n.includes(tn) || tn.includes(n))));
+  if (titleNorms.some(hit)) return 2;
+  if (weakNorms.some(hit)) return 1;
+  return 0;
+}
+
+function isTargetSong(candidateSong, titleNorms, weakNorms = []) {
+  return songMatchLevel(candidateSong, titleNorms, weakNorms) > 0;
 }
 
 // Wikipedia記事1ページ分のWikitextから該当曲のアニメタイアップを抽出
-function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
+// weakNorms（アルバム名由来）での一致はスコアを下げ、曲名一致を優先する
+function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms, weakNorms = []) {
   if (!rawWt) return null;
   const basePageTitle = cleanAnimeTitle(pageTitle);
   const isDisambigOrList = /(一覧|ディスコグラフィ|の楽曲|のアルバム|のシングル|年表)/.test(pageTitle);
@@ -997,7 +1076,13 @@ function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
       }
       const songMatches = [...line.matchAll(/「([^「」]{1,80})」/g)];
       if (songMatches.length && (line.startsWith(';') || line.startsWith('*') || line.startsWith('「'))) {
-        const matchedSong = songMatches.find((m) => isTargetSong(m[1], titleNorms));
+        // 曲名一致を優先し、なければアルバム名一致の候補を使う
+        let matchedSong = songMatches.find((m) => songMatchLevel(m[1], titleNorms) === 2);
+        let weakPenalty = 0;
+        if (!matchedSong) {
+          matchedSong = songMatches.find((m) => songMatchLevel(m[1], [], weakNorms) === 1);
+          weakPenalty = 3;
+        }
         if (matchedSong) {
           let desc = line.slice(matchedSong.index + matchedSong[0].length);
           for (let j = 1; j <= 2 && i + j < lines.length; j++) {
@@ -1010,7 +1095,7 @@ function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
           if (theme && !/テレビドラマ|実写映画|CM/.test(desc)) {
             const anime = cleanAnimeTitle(explicitAnime ? explicitAnime[1] : (currentSubWork || basePageTitle));
             const artistHit = artistNorms.some((an) => an && norm(desc).includes(an));
-            candidates.push({ anime, theme, score: artistHit ? 12 : 10, animePage: pageTitle });
+            candidates.push({ anime, theme, score: (artistHit ? 12 : 10) - weakPenalty, animePage: pageTitle });
           }
         }
       }
@@ -1020,15 +1105,17 @@ function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
   // パターン2: 本文・表・脚注内の「曲名」と『アニメ名』のペア解析
   const flatText = stripWikitext(rawWt.replace(/<ref[^>]*>([\s\S]*?)<\/ref>/gi, ' $1 '));
   for (const m of flatText.matchAll(/[「“"]([^「」“”"\n]{1,60})[」”"][^「」\n]{0,60}?(?:アニメ|劇場版|映画)[^『「\n]{0,15}[『「]([^『』「」\n]{1,80})[』」][^。\n]{0,30}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング|テーマ・ソング)(?:テーマ|主題歌|曲)?/gi)) {
-    if (isTargetSong(m[1], titleNorms)) {
+    const lv = songMatchLevel(m[1], titleNorms, weakNorms);
+    if (lv) {
       const theme = parseThemeType(m[0]);
-      if (theme) candidates.push({ anime: cleanAnimeTitle(m[2]), theme, score: 11 });
+      if (theme) candidates.push({ anime: cleanAnimeTitle(m[2]), theme, score: lv === 2 ? 11 : 8 });
     }
   }
   for (const m of flatText.matchAll(/(?:アニメ|劇場版)[^『「\n]{0,15}[『「]([^『』「」\n]{1,80})[』」][^。\n]{0,35}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング|テーマ・ソング)(?:テーマ|主題歌|曲)?[^「“"\n]{0,25}[「“"]([^「」“”"\n]{1,60})[」”"]/gi)) {
-    if (isTargetSong(m[3], titleNorms)) {
+    const lv = songMatchLevel(m[3], titleNorms, weakNorms);
+    if (lv) {
       const theme = parseThemeType(m[0]);
-      if (theme) candidates.push({ anime: cleanAnimeTitle(m[1]), theme, score: 11 });
+      if (theme) candidates.push({ anime: cleanAnimeTitle(m[1]), theme, score: lv === 2 ? 11 : 8 });
     }
   }
 
@@ -1038,11 +1125,12 @@ function extractFromWikitext(pageTitle, rawWt, titleNorms, artistNorms) {
     if (b.length > 600) continue;
     const tokens = [...b.matchAll(/(?:「([^「」\n]+)」|^\|+\s*([^\n|]+)|^#[*:]?\s*([^\n\[]+))/gm)]
       .map((x) => (x[1] || x[2] || x[3] || '').trim().replace(/\s*\[\d+:\d+\]\s*$/, ''));
-    if (tokens.some((tk) => isTargetSong(tk, titleNorms))) {
+    const lv = Math.max(0, ...tokens.map((tk) => songMatchLevel(tk, titleNorms, weakNorms)));
+    if (lv) {
       const am = b.match(/(?:アニメ|劇場版)[^『\n]{0,15}『([^『』\n]{1,80})』[^。\n]{0,30}?(オープニング|エンディング|OP|ED|主題歌|挿入歌|イメージソング|テーマソング)/i);
       if (am) {
         const theme = parseThemeType(am[0]);
-        if (theme) candidates.push({ anime: cleanAnimeTitle(am[1]), theme, score: 9 });
+        if (theme) candidates.push({ anime: cleanAnimeTitle(am[1]), theme, score: lv === 2 ? 9 : 6 });
       }
     }
   }
@@ -1075,11 +1163,13 @@ async function lookupWikipedia(track) {
   const titleNorms = titleVars.map(norm).filter(Boolean);
   const artistNorms = artistVars.map(norm).filter(Boolean);
   if (!titleNorms.length) return null;
+  const albumNorm = norm(getAlbumTitleVariant(track));
+  const weakNorms = albumNorm && !titleNorms.includes(albumNorm) ? [albumNorm] : [];
 
   // (1) 直近ヒットしたアニメ記事キャッシュにあれば通信ゼロで即座に返す（OP/EDペア曲の高速判定）
   for (const pageTitle of state.recentAnimePages) {
     const wt = state.wikiPageCache.get(pageTitle);
-    const hit = extractFromWikitext(pageTitle, wt, titleNorms, artistNorms);
+    const hit = extractFromWikitext(pageTitle, wt, titleNorms, artistNorms, weakNorms);
     if (hit && hit.score >= 10) {
       return { entries: [{ anime: hit.anime, theme: hit.theme }], source: 'Wikipedia', _fromMemory: true };
     }
@@ -1132,7 +1222,7 @@ async function lookupWikipedia(track) {
   let best = null;
   for (const t of candidateTitles) {
     const wt = state.wikiPageCache.get(t) || '';
-    const hit = extractFromWikitext(t, wt, titleNorms, artistNorms);
+    const hit = extractFromWikitext(t, wt, titleNorms, artistNorms, weakNorms);
     if (hit && (!best || hit.score > best.score)) best = hit;
   }
   if (!best) return null;
@@ -1296,10 +1386,18 @@ async function playTrack(track, positionMs = 0) {
   // 再生できなくても歌詞は表示する
   showLyricsFor(track);
 
-  const useContext = state.currentPlaylist && track.pos >= 0 && state.tracks.includes(track);
-  const contextBody = useContext
-    ? { context_uri: state.currentPlaylist.uri || `spotify:playlist:${state.currentPlaylist.id}`, offset: { position: track.pos } }
-    : { uris: [track.uri] };
+  const useContext = state.currentPlaylist && !state.currentPlaylist.isLiked && track.pos >= 0 && state.tracks.includes(track);
+  let contextBody;
+  if (useContext) {
+    contextBody = { context_uri: state.currentPlaylist.uri || `spotify:playlist:${state.currentPlaylist.id}`, offset: { position: track.pos } };
+  } else if (state.currentPlaylist?.isLiked && state.tracks.includes(track)) {
+    // お気に入りの曲はAPIでコンテキスト再生できないため、選択曲以降の曲をキューとして渡す
+    const idx = state.tracks.indexOf(track);
+    const uris = state.tracks.slice(idx).filter((t) => !t.isLocal && t.uri).slice(0, 100).map((t) => t.uri);
+    contextBody = { uris: uris.length ? uris : [track.uri] };
+  } else {
+    contextBody = { uris: [track.uri] };
+  }
   if (positionMs > 0) contextBody.position_ms = Math.floor(positionMs);
 
   const devQuery = state.selectedDeviceId ? `?device_id=${encodeURIComponent(state.selectedDeviceId)}` : '';
@@ -1692,7 +1790,7 @@ function updatePlayerUI() {
   const pb = state.playback;
   const track = pb?.track;
   $('#npTitle').textContent = track ? track.name : '再生していません';
-  $('#npArtist').textContent = track ? track.artistStr : 'Spotifyアプリで再生するか、曲をタップしてください';
+  $('#npArtist').textContent = track ? track.artistStr : 'Spotifyアプリで再生するか、曲をダブルクリックしてください';
   const art = $('#npArt');
   if (track?.artMedium) {
     if (art.getAttribute('src') !== track.artMedium) art.src = track.artMedium;
@@ -1761,37 +1859,81 @@ async function lrclibSearch(params) {
   return Array.isArray(data) ? data : [];
 }
 
-// 検索結果から最適な歌詞を選ぶ（再生時間が近く、同期歌詞があるものを優先）
-function pickBestLyrics(list, durationSec, strict) {
+// 検索結果から最適な歌詞を選ぶ（再生時間・曲名・アーティストが近く、同期歌詞があるものを優先）
+// opts.titleNorms / opts.artistNorms: 照合用の正規化済み候補
+// opts.requireMatch: 曲名のみで検索した場合など、曲名＋（アーティスト or 再生時間）一致を必須にする
+function pickBestLyrics(list, durationSec, strict, opts = {}) {
+  const titleNorms = opts.titleNorms || [];
+  const artistNorms = opts.artistNorms || [];
   const scored = list
     .filter((r) => r && (r.syncedLyrics || r.plainLyrics || r.instrumental))
     .map((r) => {
       const diff = durationSec && r.duration ? Math.abs(r.duration - durationSec) : 99;
-      return { r, diff, score: (r.syncedLyrics ? 100 : 0) - diff * 5 };
+      const rt = norm(r.trackName || r.name || '');
+      const ra = norm(r.artistName || '');
+      const titleHit = !!rt && titleNorms.some((tn) => tn && (rt === tn || (rt.length >= 3 && tn.length >= 3 && (rt.includes(tn) || tn.includes(rt)))));
+      const artistHit = !!ra && artistNorms.some((an) => an && an.length >= 2 && (ra.includes(an) || an.includes(ra)));
+      const score = (r.syncedLyrics ? 100 : 0) - diff * 5 + (artistHit ? 30 : 0) + (titleHit ? 20 : 0);
+      return { r, diff, score, titleHit, artistHit };
     })
     .filter((x) => !strict || x.diff <= 4 || !durationSec)
     .filter((x) => x.diff <= 15 || !durationSec)
+    .filter((x) => !opts.requireMatch || (x.titleHit && (x.artistHit || x.diff <= 2)))
     .sort((a, b) => b.score - a.score);
   return scored[0]?.r || null;
+}
+
+// 歌詞検索用の曲名候補（TVサイズ表記などを除去）
+function getLyricsTitleVariants(track) {
+  const raw = String(track.name || '').trim();
+  const set = new Set();
+  const clean = cleanTitle(raw);
+  if (clean) set.add(clean);
+  const noSize = raw
+    .replace(/[\s\-－–—~〜]*[(（\[［]?\s*(?:TV|テレビ|アニメ)\s*(?:size|サイズ|ver\.?|version|edit|mix)\s*[)）\]］]?/gi, '')
+    .trim();
+  if (noSize && noSize !== raw) set.add(noSize);
+  set.add(raw);
+  return [...set].filter(Boolean);
+}
+
+// 歌詞検索用のアーティスト候補（「キャラ名 (CV: 声優名)」等を分解）
+function getLyricsArtistVariants(track) {
+  const set = new Set();
+  if (track.artists[0]) set.add(track.artists[0]);
+  getArtistVariants(track).forEach((a) => set.add(a));
+  return [...set].filter(Boolean).slice(0, 4);
 }
 
 async function fetchLyrics(track) {
   if (state.lyricsCache.has(track.id)) return state.lyricsCache.get(track.id);
   const dur = Math.round(track.durationMs / 1000);
-  const artist = track.artists[0] || '';
-  const clean = cleanTitle(track.name);
+  const titles = getLyricsTitleVariants(track);
+  const artists = getLyricsArtistVariants(track);
+  const clean = titles[0] || cleanTitle(track.name);
+  const artist = artists[0] || '';
+  const titleNorms = titles.map(norm).filter(Boolean);
+  const artistNorms = artists.map(norm).filter(Boolean);
   let result = null;
+  const better = (cand) => cand && (!result || (cand.syncedLyrics && !result.syncedLyrics));
 
-  // 1) 完全一致検索（get）
+  // 1) 完全一致検索（get）：曲名×アーティストの組み合わせを順に試す
   const getAttempts = [
     { track_name: track.name, artist_name: artist, album_name: track.album, duration: dur },
     { track_name: track.name, artist_name: artist, duration: dur },
   ];
-  if (clean !== track.name) getAttempts.push({ track_name: clean, artist_name: artist, duration: dur });
+  for (const a of artists.slice(0, 2)) {
+    for (const t of titles.slice(0, 2)) getAttempts.push({ track_name: t, artist_name: a, duration: dur });
+  }
+  const triedGet = new Set();
   for (const p of getAttempts) {
+    const key = JSON.stringify(p);
+    if (triedGet.has(key)) continue;
+    triedGet.add(key);
     try {
       const r = await lrclibGet(p);
-      if (r && (r.syncedLyrics || r.plainLyrics || r.instrumental)) { result = r; break; }
+      if (r && (r.syncedLyrics || r.plainLyrics || r.instrumental) && better(r)) result = r;
+      if (result?.syncedLyrics || result?.instrumental) break;
     } catch (e) {
       console.warn(e);
     }
@@ -1800,14 +1942,18 @@ async function fetchLyrics(track) {
   // 2) あいまい検索（search）
   if (!result || (!result.syncedLyrics && !result.instrumental)) {
     const searches = [
-      { track_name: clean, artist_name: artist },
-      { q: `${clean} ${artist}` },
+      { p: { track_name: clean, artist_name: artist }, strict: false, requireMatch: false },
+      ...artists.slice(1, 3).map((a) => ({ p: { track_name: clean, artist_name: a }, strict: false, requireMatch: false })),
+      { p: { q: `${clean} ${artist}` }, strict: true, requireMatch: false },
+      // アーティスト表記ゆれ（英語表記・キャラ名義など）対策：曲名のみで検索し、曲名＋再生時間/アーティストで照合
+      { p: { track_name: clean }, strict: false, requireMatch: true },
+      { p: { q: clean }, strict: true, requireMatch: true },
     ];
-    for (const p of searches) {
+    for (const s of searches) {
       try {
-        const list = await lrclibSearch(p);
-        const best = pickBestLyrics(list, dur, !!p.q);
-        if (best && (!result || (best.syncedLyrics && !result.syncedLyrics))) { result = best; }
+        const list = await lrclibSearch(s.p);
+        const best = pickBestLyrics(list, dur, s.strict, { titleNorms, artistNorms, requireMatch: s.requireMatch });
+        if (better(best)) result = best;
         if (result?.syncedLyrics) break;
       } catch (e) {
         console.warn(e);
@@ -1852,14 +1998,42 @@ function parseLRC(lrc) {
 /* ==========================================================
    15. 歌詞表示・ハイライト・タップでジャンプ
    ========================================================== */
+function isWideLayout() {
+  return window.innerWidth >= 1200;
+}
+
 function isLyricsVisible() {
-  return window.innerWidth >= 1200 || document.body.classList.contains('lyrics-open');
+  // PC幅では右カラムを折りたたんでいなければ表示中
+  if (isWideLayout()) return !document.body.classList.contains('lyrics-collapsed');
+  return document.body.classList.contains('lyrics-open');
+}
+
+// 🎤ボタン：PC幅は右カラムの表示/非表示、それ以外はオーバーレイの開閉
+function toggleLyricsPanel() {
+  if (isWideLayout()) {
+    const collapsed = !document.body.classList.contains('lyrics-collapsed');
+    document.body.classList.toggle('lyrics-collapsed', collapsed);
+    localStorage.setItem(LS.lyricsCollapsed, collapsed ? '1' : '0');
+    syncLyricsButton();
+    if (!collapsed) setLyricsOpen(true);
+  } else {
+    setLyricsOpen(!document.body.classList.contains('lyrics-open'));
+  }
+}
+
+function syncLyricsButton() {
+  $('#btnToggleLyrics').classList.toggle('active', isLyricsVisible());
 }
 
 function setLyricsOpen(open) {
   document.body.classList.toggle('lyrics-open', open);
-  $('#lyricsPanel').setAttribute('aria-hidden', String(!open && window.innerWidth < 1200));
-  $('#btnToggleLyrics').classList.toggle('active', open);
+  // PC幅で折りたたみ中に「開く」操作をした場合は折りたたみを解除
+  if (open && isWideLayout() && document.body.classList.contains('lyrics-collapsed')) {
+    document.body.classList.remove('lyrics-collapsed');
+    localStorage.setItem(LS.lyricsCollapsed, '0');
+  }
+  $('#lyricsPanel').setAttribute('aria-hidden', String(!isLyricsVisible()));
+  syncLyricsButton();
   if (open) {
     state.userScrollUntil = 0;
     updateLyricsHighlight(true);
@@ -1918,7 +2092,11 @@ function renderLyrics(lyrics) {
     $('#lyricsMode').textContent = '';
   } else {
     body.className = 'lyrics-body plain';
-    body.innerHTML = `<p class="center muted">${lyrics.error ? '歌詞の取得に失敗しました' : '歌詞が見つかりませんでした'}</p>`;
+    const links = spotifyLinks(state.lyrics.track);
+    body.innerHTML = `<p class="center muted">${lyrics.error ? '歌詞の取得に失敗しました' : '歌詞が見つかりませんでした'}</p>
+      <p class="center muted small">この画面の歌詞は公開データベース LRCLIB から取得しています。<br>
+      Spotify本体の歌詞（Musixmatch提供）は外部アプリから取得できないため、<br>
+      <a href="${esc(links.app)}">Spotifyアプリ</a> / <a href="${esc(links.web)}" target="_blank" rel="noopener">Web版</a> でご覧ください。</p>`;
     $('#lyricsMode').textContent = '';
   }
 }
@@ -2172,11 +2350,22 @@ function bindUI() {
   $('#btnBackToPlaylists').addEventListener('click', () => document.body.classList.add('show-sidebar'));
   $('#btnOpenSidebarEmpty').addEventListener('click', () => document.body.classList.add('show-sidebar'));
 
-  // 曲リスト（タップで再生 / バッジタップで編集）
+  // 曲リスト（シングルクリックで選択 / ダブルクリック・ダブルタップで再生 / バッジタップで編集）
+  // ※タッチ端末では dblclick が発火しないことがあるため、クリック間隔で自前判定する
+  let lastTrackClick = { li: null, time: 0 };
   $('#trackList').addEventListener('click', (e) => {
     if (e.target.closest('[data-edit]')) return; // バッジはグローバルで処理
     const li = e.target.closest('.track');
     if (!li) return;
+    const now = Date.now();
+    const isDouble = lastTrackClick.li === li && now - lastTrackClick.time < 400;
+    $$('.track.selected').forEach((el) => el.classList.remove('selected'));
+    li.classList.add('selected');
+    if (!isDouble) {
+      lastTrackClick = { li, time: now };
+      return;
+    }
+    lastTrackClick = { li: null, time: 0 };
     const track = state.tracks.find((t) => t.id === li.dataset.id && String(t.pos + 1) === li.querySelector('.t-num').textContent)
       || state.knownTracks.get(li.dataset.id);
     playTrack(track);
@@ -2250,7 +2439,11 @@ function bindUI() {
   });
 
   // 歌詞パネル
-  $('#btnToggleLyrics').addEventListener('click', () => setLyricsOpen(!document.body.classList.contains('lyrics-open')));
+  $('#btnToggleLyrics').addEventListener('click', toggleLyricsPanel);
+  // PC幅の右カラム折りたたみ状態を復元
+  document.body.classList.toggle('lyrics-collapsed', localStorage.getItem(LS.lyricsCollapsed) === '1');
+  syncLyricsButton();
+  window.addEventListener('resize', syncLyricsButton);
   $('#nowPlaying').addEventListener('click', (e) => {
     if (e.target.closest('[data-edit]')) return;
     setLyricsOpen(true);

@@ -3,7 +3,7 @@
    - 自サイトの静的アセットをキャッシュして高速起動
    - 外部API（Spotify / AnimeThemes / Wikipedia / LRCLIB）は一切キャッシュしない
    ========================================================== */
-const CACHE_NAME = 'anison-viewer-v2';
+const CACHE_NAME = 'anison-viewer-v3';
 const ASSETS = [
   './',
   './index.html',

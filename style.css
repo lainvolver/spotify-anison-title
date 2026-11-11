@@ -214,6 +214,12 @@ body.has-player .layout {
 .playlist-item.active { background: var(--bg-elev2); }
 .playlist-item.active .pi-name { color: var(--green); }
 .pi-cover { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; background: var(--bg-elev2); flex-shrink: 0; }
+/* お気に入りの曲のカバー（Spotify風のグラデーション＋ハート） */
+.liked-cover {
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #450af5, #c4efd9);
+  color: #fff; font-size: 1.4rem;
+}
 .pi-text { min-width: 0; }
 .pi-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pi-sub { font-size: 0.8rem; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -246,8 +252,12 @@ body.has-player .layout {
   align-items: center; gap: 12px;
   padding: 8px 10px; border-radius: 8px; cursor: pointer;
   transition: background .12s;
+  /* ダブルクリック時に文字が選択されないようにする */
+  user-select: none; -webkit-user-select: none;
+  touch-action: manipulation;
 }
 .track:hover { background: var(--bg-hover); }
+.track.selected { background: var(--bg-elev2); }
 .track-list.filter-anime .track:not(.has-anime) { display: none; }
 .track.playing { background: rgba(30, 215, 96, 0.08); }
 .track.playing .t-name { color: var(--green); }
@@ -452,6 +462,12 @@ body.has-player .layout {
 /* ==========================================================
    レスポンシブ
    ========================================================== */
+/* PC幅: 🎤ボタンで右カラム（歌詞）を折りたたみ */
+@media (min-width: 1200px) {
+  body.lyrics-collapsed .layout { grid-template-columns: 300px minmax(0, 1fr); }
+  body.lyrics-collapsed .lyrics-panel { display: none; }
+}
+
 /* 中サイズ: 歌詞パネルはオーバーレイ */
 @media (max-width: 1199px) {
   .layout { grid-template-columns: 280px minmax(0, 1fr); }
