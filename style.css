@@ -1,0 +1,573 @@
+/* ==========================================================
+   Anison Viewer - Spotifyライクなダークテーマ
+   ========================================================== */
+:root {
+  --bg: #121212;
+  --bg-elev: #181818;
+  --bg-elev2: #242424;
+  --bg-hover: #2a2a2a;
+  --border: #2f2f2f;
+  --text: #ffffff;
+  --text-sub: #b3b3b3;
+  --text-dim: #7a7a7a;
+  --green: #1ed760;
+  --green-dark: #1db954;
+  --badge-op: #ff7a45;
+  --badge-ed: #5b8cff;
+  --badge-other: #b26bff;
+  --danger: #ff5c5c;
+  --header-h: 56px;
+  --player-h: 112px;
+  --radius: 10px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body { min-height: 100vh; min-height: 100dvh; }
+body.has-player { padding-bottom: calc(var(--player-h) + var(--safe-bottom)); }
+
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: var(--bg-elev2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+  word-break: break-all;
+}
+h1, h2, h3 { margin: 0 0 0.5em; line-height: 1.3; }
+h2 { font-size: 1.15rem; }
+h3 { font-size: 1rem; margin-top: 1.4em; }
+
+.hidden { display: none !important; }
+.muted { color: var(--text-sub); }
+.small { font-size: 0.85rem; }
+.center { text-align: center; }
+.accent { color: var(--green); }
+
+/* ---------- ボタン類 ---------- */
+button { font-family: inherit; cursor: pointer; color: inherit; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.92rem;
+  transition: transform .1s, background .15s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn:active { transform: scale(0.97); }
+.btn.small, .btn-small { padding: 6px 12px; font-size: 0.82rem; }
+.btn-primary { background: var(--green); color: #000; border-color: var(--green); }
+.btn-primary:hover { background: #3be477; }
+.btn-ghost { background: transparent; }
+.btn-large { padding: 14px 28px; font-size: 1.05rem; width: 100%; max-width: 360px; }
+.btn.full { width: 100%; }
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.file-label { cursor: pointer; }
+
+.icon-btn {
+  background: transparent; border: none;
+  width: 40px; height: 40px; border-radius: 50%;
+  font-size: 1.15rem; display: inline-flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.icon-btn:hover { background: var(--bg-hover); }
+.icon-btn.small { width: 32px; height: 32px; font-size: 0.95rem; }
+.text-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-sub); border-radius: 999px; padding: 6px 12px; font-size: 0.8rem;
+}
+.text-btn:hover { color: var(--text); }
+
+.spotify-dot {
+  width: 18px; height: 18px; border-radius: 50%; background: #000; display: inline-block;
+  box-shadow: inset 0 0 0 3px var(--green);
+}
+
+/* ---------- 入力 ---------- */
+.input {
+  flex: 1; min-width: 0;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 16px; /* iOSのズーム防止 */
+  font-family: inherit;
+  outline: none;
+}
+.input:focus { border-color: var(--green); }
+.form-row { display: flex; gap: 8px; align-items: center; }
+.field { display: block; margin: 12px 0; }
+.field > span { display: block; font-size: 0.85rem; color: var(--text-sub); margin-bottom: 4px; }
+.field .input { width: 100%; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-sub); cursor: pointer; }
+.toggle input { accent-color: var(--green); width: 16px; height: 16px; }
+
+/* ---------- ヘッダー ---------- */
+.app-header {
+  position: sticky; top: 0; z-index: 50;
+  height: calc(var(--header-h) + var(--safe-top));
+  padding: var(--safe-top) 12px 0;
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(18, 18, 18, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: .02em; }
+.brand-icon { width: 28px; height: 28px; border-radius: 6px; }
+.header-actions { display: flex; align-items: center; gap: 4px; }
+
+/* ---------- ログイン画面 ---------- */
+#loginView { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+.hero { text-align: center; padding: 24px 0 12px; }
+.hero h1 { font-size: 1.6rem; }
+.hero-sub { color: var(--text-sub); }
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  margin: 16px 0;
+}
+.card .btn-large { margin: 8px 0 10px; }
+.guide-details { margin-top: 14px; }
+.guide-details summary {
+  cursor: pointer; font-weight: 700; padding: 8px 0; color: var(--green);
+  list-style: none;
+}
+.guide-details summary::-webkit-details-marker { display: none; }
+.guide-details summary::before { content: "▶ "; font-size: 0.75em; }
+.guide-details[open] summary::before { content: "▼ "; }
+
+/* ---------- ガイド手順 ---------- */
+.guide-steps { padding-left: 0; margin: 8px 0; list-style: none; counter-reset: step; }
+.guide-steps > li {
+  counter-increment: step;
+  position: relative;
+  padding: 10px 10px 10px 44px;
+  margin-bottom: 8px;
+  background: var(--bg-elev2);
+  border-radius: var(--radius);
+  font-size: 0.92rem;
+}
+.guide-steps > li::before {
+  content: counter(step);
+  position: absolute; left: 10px; top: 10px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--green); color: #000; font-weight: 800; font-size: 0.8rem;
+  display: flex; align-items: center; justify-content: center;
+}
+.copy-box {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding: 8px; border-radius: 8px;
+  background: #0e0e0e; border: 1px dashed var(--green);
+}
+.copy-box code { background: transparent; flex: 1; min-width: 0; color: var(--green); font-size: 0.85rem; }
+.warn-localhost { margin: 6px 0 0; color: #ffb35c; }
+
+/* ---------- メインレイアウト ---------- */
+.layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 380px;
+  height: calc(100vh - var(--header-h) - var(--safe-top));
+  height: calc(100dvh - var(--header-h) - var(--safe-top));
+}
+body.has-player .layout {
+  height: calc(100vh - var(--header-h) - var(--safe-top) - var(--player-h) - var(--safe-bottom));
+  height: calc(100dvh - var(--header-h) - var(--safe-top) - var(--player-h) - var(--safe-bottom));
+}
+.sidebar, .content, .lyrics-panel { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.sidebar { background: var(--bg-elev); border-right: 1px solid var(--border); padding: 14px 10px; }
+.sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px; }
+.sidebar-head h2 { margin: 0; }
+.url-form { display: flex; gap: 6px; margin: 12px 4px; }
+.url-form .input { padding: 8px 10px; font-size: 14px; }
+
+.playlist-list { list-style: none; padding: 0; margin: 0; }
+.playlist-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px; border-radius: 8px; cursor: pointer;
+}
+.playlist-item:hover { background: var(--bg-hover); }
+.playlist-item.active { background: var(--bg-elev2); }
+.playlist-item.active .pi-name { color: var(--green); }
+.pi-cover { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; background: var(--bg-elev2); flex-shrink: 0; }
+/* お気に入りの曲のカバー（Spotify風のグラデーション＋ハート） */
+.liked-cover {
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #450af5, #c4efd9);
+  color: #fff; font-size: 1.4rem;
+}
+.pi-text { min-width: 0; }
+.pi-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-sub { font-size: 0.8rem; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.content { padding: 0 0 24px; }
+.empty-state { text-align: center; padding: 80px 20px; color: var(--text-sub); }
+.empty-icon { font-size: 3rem; }
+
+.playlist-header {
+  display: flex; align-items: flex-end; gap: 16px;
+  padding: 24px 20px 18px;
+  background: linear-gradient(180deg, #3a3a3a 0%, var(--bg) 100%);
+}
+.pl-cover { width: 140px; height: 140px; border-radius: 8px; object-fit: cover; box-shadow: 0 8px 24px rgba(0,0,0,.5); background: var(--bg-elev2); }
+.pl-meta { min-width: 0; }
+.pl-name { font-size: 1.8rem; margin: 2px 0 6px; word-break: break-word; }
+.toolbar {
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 10px 20px; position: sticky; top: 0; z-index: 5;
+  background: rgba(18,18,18,0.95);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+.toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.toolbar-controls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.toolbar-select-wrap {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.select-input {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+.select-input:focus { border-color: var(--green); }
+#btnResetSort:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---------- 曲リスト ---------- */
+.track-list { list-style: none; margin: 0; padding: 6px 8px; }
+.track {
+  display: grid;
+  grid-template-columns: 28px 44px minmax(0, 1fr) auto;
+  align-items: center; gap: 12px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  transition: background .12s;
+  /* ダブルクリック時に文字が選択されないようにする */
+  user-select: none; -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.track:hover { background: var(--bg-hover); }
+.track.selected { background: var(--bg-elev2); }
+.track-list.filter-anime .track:not(.has-anime) { display: none; }
+.track.season-filtered-out { display: none !important; }
+.track.playing { background: rgba(30, 215, 96, 0.08); }
+.track.playing .t-name { color: var(--green); }
+.track.unavailable { opacity: 0.45; }
+.t-num { color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+.track.playing .t-num { color: var(--green); }
+.t-art { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; background: var(--bg-elev2); }
+.t-main { min-width: 0; }
+.t-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-sub { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.t-artist { font-size: 0.82rem; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.t-added { font-size: 0.74rem; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.t-dur { color: var(--text-sub); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.t-badges { margin-top: 3px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+
+/* ---------- アニメバッジ ---------- */
+.anime-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 100%;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.76rem; font-weight: 700;
+  background: rgba(178, 107, 255, 0.16);
+  color: #dcb8ff;
+  border: 1px solid rgba(178, 107, 255, 0.45);
+  cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: inherit;
+}
+.anime-badge.op { background: rgba(255, 122, 69, 0.16); color: #ffb08f; border-color: rgba(255, 122, 69, 0.5); }
+.anime-badge.ed { background: rgba(91, 140, 255, 0.16); color: #a9c2ff; border-color: rgba(91, 140, 255, 0.5); }
+.anime-badge.manual::after { content: "✎"; opacity: .7; margin-left: 2px; }
+.anime-badge.searching { background: transparent; border-style: dashed; color: var(--text-dim); border-color: var(--border); font-weight: 500; }
+.anime-badge.none { background: transparent; color: var(--text-dim); border-color: var(--border); font-weight: 500; }
+.anime-badge.none:hover, .anime-badge.searching:hover { color: var(--text-sub); }
+.anime-badge .b-text { overflow: hidden; text-overflow: ellipsis; }
+.anime-season-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600;
+  background: var(--bg-elev2);
+  color: var(--text-sub);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ---------- 歌詞パネル ---------- */
+.lyrics-panel {
+  background: linear-gradient(180deg, #1f1f2e 0%, var(--bg-elev) 60%);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.lyrics-head { display: flex; align-items: flex-start; gap: 8px; padding: 14px 14px 6px; }
+.lyrics-title-wrap { flex: 1; min-width: 0; }
+.lyrics-track { font-weight: 800; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyrics-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lyricsBadge { margin-top: 4px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+#btnLyricsSync.off { opacity: .35; }
+.lyrics-tabs { padding: 0 14px 6px; }
+.lyrics-body {
+  position: relative;
+  flex: 1; overflow-y: auto; padding: 30vh 18px 40vh;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+.lyrics-body.plain { padding: 16px 18px 40px; white-space: pre-wrap; color: var(--text-sub); line-height: 1.9; }
+.lyric-line {
+  font-size: 1.25rem; font-weight: 800; line-height: 1.45;
+  color: rgba(255,255,255,0.38);
+  padding: 7px 8px; margin: 2px 0; border-radius: 8px;
+  cursor: pointer;
+  transition: color .25s, transform .25s, background .15s;
+  transform-origin: left center;
+}
+.lyric-line:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); }
+.lyric-line.past { color: rgba(255,255,255,0.6); }
+.lyric-line.active { color: #fff; transform: scale(1.03); }
+.lyric-line.empty { min-height: 1em; font-size: 1rem; }
+.lyric-line.empty::before { content: "♪"; opacity: .5; }
+.lyrics-foot { padding: 8px 14px calc(8px); border-top: 1px solid var(--border); }
+
+/* ---------- プレイヤーバー ---------- */
+.player-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  height: calc(var(--player-h) + var(--safe-bottom));
+  padding: 6px 12px calc(8px + var(--safe-bottom));
+  background: rgba(10, 10, 10, 0.97);
+  border-top: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.seek-row { display: flex; align-items: center; gap: 10px; }
+.time { font-size: 0.75rem; color: var(--text-sub); font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; }
+.seek-bar {
+  flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 4px;
+  background: linear-gradient(to right, var(--green) var(--pct, 0%), #4d4d4d var(--pct, 0%));
+  outline: none; cursor: pointer;
+}
+.seek-bar::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: none; }
+.seek-bar::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: none; }
+.player-main { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; flex: 1; }
+.now-playing { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+.np-art { width: 52px; height: 52px; border-radius: 6px; object-fit: cover; background: var(--bg-elev2); flex-shrink: 0; }
+.np-art:not([src]), .np-art[src=""] { visibility: hidden; }
+.np-text { min-width: 0; }
+.np-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-badge { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.np-badge .anime-badge { font-size: 0.7rem; padding: 1px 7px; }
+.np-badge .anime-season-badge { font-size: 0.68rem; padding: 1px 6px; }
+.controls { display: flex; align-items: center; gap: 10px; }
+.ctrl-btn {
+  background: transparent; border: none; font-size: 1.2rem; width: 42px; height: 42px; border-radius: 50%;
+  color: var(--text-sub);
+}
+.ctrl-btn:hover { color: var(--text); }
+.ctrl-btn.play { background: #fff; color: #000; width: 46px; height: 46px; font-size: 1.1rem; }
+.ctrl-btn.play:active { transform: scale(0.94); }
+.player-extra { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.volume-inline { display: flex; align-items: center; gap: 4px; width: 120px; flex-shrink: 0; }
+.volume-bar {
+  flex: 1; min-width: 60px; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 4px;
+  background: linear-gradient(to right, var(--green) var(--vol-pct, 50%), #4d4d4d var(--vol-pct, 50%));
+  outline: none; cursor: pointer;
+}
+.volume-bar::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; border: none; }
+.volume-bar::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #fff; border: none; }
+.device-btn {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 190px;
+  background: var(--bg-elev2); border: 1px solid var(--border); color: var(--text-sub);
+  padding: 5px 11px; border-radius: 999px; transition: background .15s, color .15s, border-color .15s;
+}
+.device-btn:hover { background: var(--bg-hover); color: var(--text); }
+.device-btn.active { color: var(--green); border-color: rgba(30,215,96,.45); background: rgba(30,215,96,.1); }
+.device-icon { font-size: 0.95rem; flex-shrink: 0; }
+.device-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#btnToggleLyrics.active { color: var(--green); background: rgba(30,215,96,.12); }
+
+/* ---------- デバイス＆音量モーダル ---------- */
+.volume-box {
+  background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.volume-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.9rem; font-weight: 700; margin-bottom: 8px; }
+.volume-value { color: var(--green); font-variant-numeric: tabular-nums; }
+.volume-controls { display: flex; align-items: center; gap: 8px; }
+.volume-controls .volume-bar { height: 6px; }
+.device-list-head { display: flex; align-items: center; justify-content: space-between; margin: 6px 0 8px; }
+.device-list-head h3 { margin: 0; }
+.device-list { list-style: none; padding: 0; margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; }
+.device-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-radius: 10px; background: var(--bg-elev2); border: 1px solid var(--border);
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.device-item:hover { background: var(--bg-hover); }
+.device-item.active { border-color: var(--green); background: rgba(30,215,96,.1); }
+.device-item-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.device-item-icon { font-size: 1.3rem; flex-shrink: 0; }
+.device-item-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-item.active .device-item-name { color: var(--green); }
+.device-item-sub { font-size: 0.78rem; color: var(--text-sub); }
+.device-item-status { font-size: 0.78rem; font-weight: 700; color: var(--green); white-space: nowrap; }
+
+/* ---------- ローディング ---------- */
+.loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-sub); }
+.spinner {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 3px solid var(--border); border-top-color: var(--green);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- トースト ---------- */
+.toast-wrap {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--player-h) + var(--safe-bottom) + 12px);
+  z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center;
+  width: min(92vw, 480px); pointer-events: none;
+}
+.toast {
+  background: #2e2e2e; color: #fff; padding: 10px 16px; border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.5); font-size: 0.88rem;
+  animation: toastIn .2s ease-out; pointer-events: auto;
+}
+.toast.error { background: #5a1f1f; }
+.toast.success { background: #1a4a2c; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ---------- モーダル ---------- */
+.modal { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.7); }
+.modal-box {
+  position: relative; width: min(640px, 100%); max-height: calc(100dvh - 32px);
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px;
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: modalIn .18s ease-out;
+}
+.modal-box.small-box { width: min(460px, 100%); }
+@keyframes modalIn { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 12px 18px; border-bottom: 1px solid var(--border); }
+.modal-head h2 { margin: 0; font-size: 1.05rem; }
+.modal-body { padding: 14px 18px 20px; overflow-y: auto; }
+.modal-body h3:first-child { margin-top: 0; }
+.safety-list { padding-left: 20px; }
+.safety-list > li { margin-bottom: 14px; }
+.safety-list p { margin: 4px 0; color: var(--text-sub); font-size: 0.9rem; }
+.scope-list { font-size: 0.82rem; color: var(--text-sub); padding-left: 18px; }
+.notice-text { color: var(--text-sub); }
+
+.mobile-only { display: none !important; }
+
+/* ==========================================================
+   レスポンシブ
+   ========================================================== */
+/* PC幅: 🎤ボタンで右カラム（歌詞）を折りたたみ */
+@media (min-width: 1200px) {
+  body.lyrics-collapsed .layout { grid-template-columns: 300px minmax(0, 1fr); }
+  body.lyrics-collapsed .lyrics-panel { display: none; }
+}
+
+/* 中サイズ: 歌詞パネルはオーバーレイ */
+@media (max-width: 1199px) {
+  .layout { grid-template-columns: 280px minmax(0, 1fr); }
+  .lyrics-panel {
+    position: fixed; z-index: 70;
+    top: calc(var(--header-h) + var(--safe-top)); right: 0;
+    bottom: calc(var(--player-h) + var(--safe-bottom));
+    width: min(420px, 100%);
+    transform: translateX(100%);
+    transition: transform .25s ease;
+    box-shadow: -10px 0 30px rgba(0,0,0,.5);
+  }
+  body:not(.has-player) .lyrics-panel { bottom: 0; }
+  body.lyrics-open .lyrics-panel { transform: none; }
+}
+
+/* スマホ */
+@media (max-width: 767px) {
+  :root { --player-h: 120px; }
+  .mobile-only { display: inline-flex !important; }
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { border-right: none; display: none; }
+  body.show-sidebar .sidebar { display: block; }
+  body.show-sidebar .content { display: none; }
+
+  .playlist-header { padding: 16px 12px 14px; gap: 12px; align-items: center; }
+  .pl-cover { width: 84px; height: 84px; }
+  .pl-name { font-size: 1.25rem; }
+  .toolbar { padding: 8px 12px; }
+  .track-list { padding: 4px; }
+  .track { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; padding: 8px 8px; }
+  .t-num { display: none; }
+  .t-dur { font-size: 0.75rem; }
+
+  /* 歌詞は全画面表示 */
+  .lyrics-panel {
+    top: 0; width: 100%; padding-top: var(--safe-top);
+    transform: translateY(100%);
+    border-left: none;
+  }
+  body.lyrics-open .lyrics-panel { transform: none; }
+  .lyric-line { font-size: 1.35rem; }
+
+  .player-main { grid-template-columns: minmax(0, 1fr) auto; }
+  .player-extra { position: absolute; right: 8px; top: -46px; gap: 6px; }
+  .player-extra .volume-inline { display: none; }
+  .player-extra .device-name { display: none; }
+  .player-extra .device-btn {
+    width: 40px; height: 40px; padding: 0; border-radius: 50%; justify-content: center;
+    background: rgba(30,30,30,.95); border: 1px solid var(--border);
+  }
+  .player-extra .device-btn.active { border-color: var(--green); }
+  .player-extra .icon-btn { background: rgba(30,30,30,.95); border: 1px solid var(--border); }
+  .controls { gap: 4px; }
+  .ctrl-btn { width: 38px; height: 38px; font-size: 1.05rem; }
+  .np-art { width: 46px; height: 46px; }
+  .hero h1 { font-size: 1.35rem; }
+  .form-row { flex-wrap: wrap; }
+  .form-row .input { flex-basis: 100%; }
+  .form-row .btn { flex: 1; }
+}

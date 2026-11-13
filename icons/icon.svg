@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- アプリアイコン：音符＋カチンコ風 -->
+  <rect width="512" height="512" rx="110" fill="#121212"/>
+  <circle cx="256" cy="256" r="196" fill="#1ed760"/>
+  <path d="M206 140v186a56 56 0 1 0 32 50V214l120-28v108a56 56 0 1 0 32 50V120z" fill="#121212"/>
+  <rect x="300" y="60" width="150" height="40" rx="8" fill="#ff7a45" transform="rotate(18 375 80)"/>
+</svg>
