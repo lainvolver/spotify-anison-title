@@ -237,12 +237,38 @@ body.has-player .layout {
 .pl-meta { min-width: 0; }
 .pl-name { font-size: 1.8rem; margin: 2px 0 6px; word-break: break-word; }
 .toolbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
-  padding: 8px 20px; position: sticky; top: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 10px 20px; position: sticky; top: 0; z-index: 5;
   background: rgba(18,18,18,0.95);
   border-bottom: 1px solid var(--border);
 }
+.toolbar-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.toolbar-controls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.toolbar-select-wrap {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.select-input {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+.select-input:focus { border-color: var(--green); }
+#btnResetSort:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
 
 /* ---------- 曲リスト ---------- */
 .track-list { list-style: none; margin: 0; padding: 6px 8px; }
@@ -259,6 +285,7 @@ body.has-player .layout {
 .track:hover { background: var(--bg-hover); }
 .track.selected { background: var(--bg-elev2); }
 .track-list.filter-anime .track:not(.has-anime) { display: none; }
+.track.season-filtered-out { display: none !important; }
 .track.playing { background: rgba(30, 215, 96, 0.08); }
 .track.playing .t-name { color: var(--green); }
 .track.unavailable { opacity: 0.45; }
@@ -267,9 +294,11 @@ body.has-player .layout {
 .t-art { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; background: var(--bg-elev2); }
 .t-main { min-width: 0; }
 .t-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.t-artist { font-size: 0.82rem; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-sub { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.t-artist { font-size: 0.82rem; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.t-added { font-size: 0.74rem; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .t-dur { color: var(--text-sub); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
-.t-badges { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px; }
+.t-badges { margin-top: 3px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 
 /* ---------- アニメバッジ ---------- */
 .anime-badge {
@@ -292,6 +321,17 @@ body.has-player .layout {
 .anime-badge.none { background: transparent; color: var(--text-dim); border-color: var(--border); font-weight: 500; }
 .anime-badge.none:hover, .anime-badge.searching:hover { color: var(--text-sub); }
 .anime-badge .b-text { overflow: hidden; text-overflow: ellipsis; }
+.anime-season-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600;
+  background: var(--bg-elev2);
+  color: var(--text-sub);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 /* ---------- 歌詞パネル ---------- */
 .lyrics-panel {
@@ -304,7 +344,7 @@ body.has-player .layout {
 .lyrics-title-wrap { flex: 1; min-width: 0; }
 .lyrics-track { font-weight: 800; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lyrics-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#lyricsBadge { margin-top: 4px; }
+#lyricsBadge { margin-top: 4px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 #btnLyricsSync.off { opacity: .35; }
 .lyrics-tabs { padding: 0 14px 6px; }
 .lyrics-body {
@@ -356,7 +396,9 @@ body.has-player .layout {
 .np-text { min-width: 0; }
 .np-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-badge { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .np-badge .anime-badge { font-size: 0.7rem; padding: 1px 7px; }
+.np-badge .anime-season-badge { font-size: 0.68rem; padding: 1px 6px; }
 .controls { display: flex; align-items: center; gap: 10px; }
 .ctrl-btn {
   background: transparent; border: none; font-size: 1.2rem; width: 42px; height: 42px; border-radius: 50%;

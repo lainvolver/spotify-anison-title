@@ -77,11 +77,13 @@ const state = {
   editingTrackId: null,
   pollTimer: null,
   tickTimer: null,
-  animeCache: {},            // trackId -> { entries:[{anime, theme}], source, manual, none, ts }
+  animeCache: {},            // trackId -> { entries:[{anime, theme, year, season, seasonScore, seasonText}], seasonScore, seasonText, source, manual, none, ts }
   animeErrors: new Set(),    // 検索失敗した trackId（一時的）
   wikiPageCache: new Map(),  // Wikipedia pageTitle -> wikitext（同一セッション内キャッシュ）
   recentAnimePages: [],      // 直近ヒットしたアニメ記事タイトル（同一プレイリスト内の高速判定用）
   lyricsCache: new Map(),    // trackId -> 歌詞データ
+  sortOrder: 'original',     // 曲リストのソート順（original / season-desc / season-asc / added-desc / added-asc）
+  seasonFilter: '',          // 放送時期フィルタ（seasonScoreの文字列、未指定なら空文字）
 };
 
 /* ==========================================================
@@ -103,6 +105,82 @@ function fmtTime(ms) {
   if (!Number.isFinite(ms) || ms < 0) ms = 0;
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// 追加日時（ISO文字列）→ YYYY/MM/DD 表示用フォーマット
+function fmtAddedDate(iso) {
+  if (!iso || String(iso).startsWith('1970-01-01')) return '';
+  const d = new Date(iso);
+  if (!Number.isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}/${m}/${day}`;
+  }
+  const m = String(iso).match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  return m ? `${m[1]}/${m[2].padStart(2, '0')}/${m[3].padStart(2, '0')}` : '';
+}
+
+// 追加日時（ISO文字列）→ ソート用ミリ秒タイムスタンプ
+function parseAddedTime(iso) {
+  if (!iso || String(iso).startsWith('1970-01-01')) return 0;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
+// 季節定義（WINTER=1, SPRING=2, SUMMER=3, FALL=4）
+const SEASON_MAP = {
+  WINTER: { num: 1, label: '冬', key: 'WINTER' },
+  SPRING: { num: 2, label: '春', key: 'SPRING' },
+  SUMMER: { num: 3, label: '夏', key: 'SUMMER' },
+  FALL:   { num: 4, label: '秋', key: 'FALL' },
+  AUTUMN: { num: 4, label: '秋', key: 'FALL' },
+  '冬':   { num: 1, label: '冬', key: 'WINTER' },
+  '春':   { num: 2, label: '春', key: 'SPRING' },
+  '夏':   { num: 3, label: '夏', key: 'SUMMER' },
+  '秋':   { num: 4, label: '秋', key: 'FALL' },
+};
+
+// 5桁の seasonScore (例: 20263) → 表示文字列 (例: "2026年夏")
+function formatSeasonScore(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n) || n < 19001) return '';
+  const year = Math.floor(n / 10);
+  const sNum = n % 10;
+  const labels = { 1: '冬', 2: '春', 3: '夏', 4: '秋' };
+  return labels[sNum] ? `${year}年${labels[sNum]}` : `${year}年`;
+}
+
+// 放送年(year)と季節(season)から seasonScore (year * 10 + seasonNum) と表示文字列を生成
+function buildSeasonInfo(year, season) {
+  const y = parseInt(year, 10);
+  if (!Number.isFinite(y) || y < 1950 || y > 2100) return null;
+  const key = String(season || '').trim().toUpperCase();
+  const sInfo = SEASON_MAP[key];
+  if (!sInfo) return null;
+  const seasonScore = y * 10 + sInfo.num;
+  return {
+    year: y,
+    season: sInfo.key,
+    seasonScore,
+    seasonText: `${y}年${sInfo.label}`,
+  };
+}
+
+// 楽曲のリリース日 (track.album.release_date) から放送時期スコアを自動推測（フォールバック用）
+// 1〜3月=冬(1), 4〜6月=春(2), 7〜9月=夏(3), 10〜12月=秋(4)
+function inferSeasonFromReleaseDate(releaseDate, fallbackYear = null) {
+  const s = String(releaseDate || '').trim();
+  const m = s.match(/^(\d{4})(?:[-/](\d{1,2}))?/);
+  const y = m ? parseInt(m[1], 10) : parseInt(fallbackYear, 10);
+  if (!Number.isFinite(y) || y < 1950 || y > 2100) return null;
+  const month = m && m[2] ? parseInt(m[2], 10) : 1;
+  let seasonKey = 'WINTER';
+  if (month >= 4 && month <= 6) seasonKey = 'SPRING';
+  else if (month >= 7 && month <= 9) seasonKey = 'SUMMER';
+  else if (month >= 10 && month <= 12) seasonKey = 'FALL';
+  const info = buildSeasonInfo(y, seasonKey);
+  return info ? { ...info, seasonFallback: true } : null;
 }
 
 // 比較用に文字列を正規化（全角半角統一・小文字化・空白記号除去）
@@ -459,19 +537,26 @@ async function api(pathOrUrl, { method = 'GET', body = null, retry = true } = {}
 }
 
 // API の track オブジェクト → アプリ内の曲モデル
-function buildTrack(t, pos = -1) {
+function buildTrack(t, pos = -1, addedAt = '') {
   if (!t) return null;
   const images = t.album?.images || [];
+  const trackId = t.id || `local:${t.uri}`;
+  const prev = pos < 0 ? state.knownTracks.get(trackId) : null;
+  const originalIndex = pos >= 0 ? pos : (prev?.originalIndex ?? 0);
   const track = {
-    id: t.id || `local:${t.uri}`,
+    id: trackId,
+    trackId,
     uri: t.uri,
     name: t.name || '(不明な曲)',
     artists: (t.artists || []).map((a) => a.name).filter(Boolean),
     album: t.album?.name || '',
+    releaseDate: t.album?.release_date || prev?.releaseDate || '',
+    addedAt: addedAt || prev?.addedAt || '',
+    originalIndex,
+    pos: originalIndex,
     artSmall: images.length ? images[images.length - 1].url : '',
     artMedium: images.length ? (images[1] || images[0]).url : '',
     durationMs: t.duration_ms || 0,
-    pos,
     isLocal: !!t.is_local || !t.id,
     isPlayable: t.is_playable !== false,
   };
@@ -569,6 +654,7 @@ async function selectPlaylist(id) {
   const gen = ++state.loadGeneration;
   clearAnimeQueue();
   state.tracks = [];
+  resetSortAndFilterUI();
   localStorage.setItem(LS.lastPlaylist, id);
   document.body.classList.remove('show-sidebar');
 
@@ -608,14 +694,17 @@ async function selectPlaylist(id) {
       const newTracks = [];
       for (const entry of page.items || []) {
         const t = entry?.track || entry?.item;
-        const currentPos = pos++;
         if (!t || (t.type && t.type !== 'track')) continue; // ポッドキャスト等は除外
-        const track = buildTrack(t, currentPos);
+        const currentPos = pos++;
+        const track = buildTrack(t, currentPos, entry?.added_at || '');
+        ensureTrackSeasonCache(track);
         newTracks.push(track);
       }
       state.tracks.push(...newTracks);
       appendTrackRows(newTracks);
       newTracks.forEach((t) => enqueueAnime(t));
+      updateSeasonFilterOptions();
+      if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
       updateAnimeProgress();
       if (!page.next) break;
       page = await api(page.next);
@@ -653,13 +742,17 @@ async function loadLikedTracks(gen) {
     const newTracks = [];
     for (const entry of page.items || []) {
       const t = entry?.track || entry?.item;
-      const currentPos = pos++;
       if (!t || (t.type && t.type !== 'track')) continue;
-      newTracks.push(buildTrack(t, currentPos));
+      const currentPos = pos++;
+      const track = buildTrack(t, currentPos, entry?.added_at || '');
+      ensureTrackSeasonCache(track);
+      newTracks.push(track);
     }
     state.tracks.push(...newTracks);
     appendTrackRows(newTracks);
     newTracks.forEach((t) => enqueueAnime(t));
+    updateSeasonFilterOptions();
+    if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
     updateAnimeProgress();
     if (!page.next) break;
     page = await api(page.next);
@@ -684,16 +777,24 @@ function appendTrackRows(tracks) {
     const li = document.createElement('li');
     li.className = 'track' + (t.isLocal || !t.isPlayable ? ' unavailable' : '');
     li.dataset.id = t.id;
+    li.dataset.originalIndex = String(t.originalIndex);
+    const addedLabel = fmtAddedDate(t.addedAt);
     li.innerHTML = `
-      <span class="t-num">${t.pos + 1}</span>
+      <span class="t-num">${t.originalIndex + 1}</span>
       <img class="t-art" src="${esc(t.artSmall)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
       <div class="t-main">
         <div class="t-name">${esc(t.name)}</div>
-        <div class="t-artist">${esc(t.artistStr)}</div>
+        <div class="t-sub">
+          <span class="t-artist">${esc(t.artistStr)}</span>
+          ${addedLabel ? `<span class="t-added">追加日: ${esc(addedLabel)}</span>` : ''}
+        </div>
         <div class="t-badges" data-badge-for="${esc(t.id)}">${badgeHTML(t.id)}</div>
       </div>
       <span class="t-dur">${fmtTime(t.durationMs)}</span>`;
     li.classList.toggle('has-anime', hasAnime(t.id));
+    if (state.seasonFilter) {
+      li.classList.toggle('season-filtered-out', String(getTrackSeasonScore(t)) !== String(state.seasonFilter));
+    }
     frag.appendChild(li);
   }
   $('#trackList').appendChild(frag);
@@ -704,6 +805,178 @@ function markPlayingRow() {
   $$('.track.playing').forEach((el) => el.classList.remove('playing'));
   if (!id) return;
   $$(`.track[data-id="${CSS.escape(id)}"]`).forEach((el) => el.classList.add('playing'));
+}
+
+/* ==========================================================
+   7b. ソート切り替え・元の順番への復元・放送時期フィルタ
+   ========================================================== */
+
+// トラックの放送時期情報（キャッシュ優先 → リリース日フォールバック）を取得
+function getTrackSeasonInfo(track) {
+  if (!track) return null;
+  const c = state.animeCache[track.id];
+  const entry = c?.entries?.[0];
+  if (entry?.seasonScore) {
+    return {
+      year: entry.year,
+      season: entry.season,
+      seasonScore: Number(entry.seasonScore),
+      seasonText: entry.seasonText || formatSeasonScore(entry.seasonScore),
+    };
+  }
+  if (c?.seasonScore) {
+    return {
+      year: c.year,
+      season: c.season,
+      seasonScore: Number(c.seasonScore),
+      seasonText: c.seasonText || formatSeasonScore(c.seasonScore),
+    };
+  }
+  return inferSeasonFromReleaseDate(track.releaseDate);
+}
+
+// トラックの5桁放送時期スコア（未取得時は0）
+function getTrackSeasonScore(track) {
+  const info = getTrackSeasonInfo(track);
+  return info?.seasonScore || 0;
+}
+
+// 既存キャッシュに seasonScore が未保存の場合はリリース日フォールバックを補完して localStorage に保存
+function ensureTrackSeasonCache(track) {
+  if (!track?.id) return;
+  const c = state.animeCache[track.id];
+  if (!c) return;
+  let updated = false;
+  const fallback = inferSeasonFromReleaseDate(track.releaseDate);
+  if (Array.isArray(c.entries) && c.entries.length) {
+    c.entries = c.entries.map((e) => {
+      if (e.seasonScore && e.seasonText) return e;
+      const sInfo = buildSeasonInfo(e.year, e.season) || inferSeasonFromReleaseDate(track.releaseDate, e.year) || fallback;
+      if (!sInfo) return e;
+      updated = true;
+      return { ...e, ...sInfo };
+    });
+  }
+  const primary = c.entries?.[0]?.seasonScore ? c.entries[0] : fallback;
+  if (primary?.seasonScore && (!c.seasonScore || !c.seasonText)) {
+    c.seasonScore = primary.seasonScore;
+    c.year = primary.year;
+    c.season = primary.season;
+    c.seasonText = primary.seasonText || formatSeasonScore(primary.seasonScore);
+    updated = true;
+  }
+  if (updated) saveAnimeCache();
+}
+
+// プレイリスト切替時にソートと放送時期フィルタを初期状態にリセット
+function resetSortAndFilterUI() {
+  state.sortOrder = 'original';
+  state.seasonFilter = '';
+  const sortSel = $('#sortOrderSelect');
+  if (sortSel) sortSel.value = 'original';
+  const filterSel = $('#filterSeasonSelect');
+  if (filterSel) {
+    filterSel.innerHTML = '<option value="">すべての時期</option>';
+    filterSel.value = '';
+  }
+  const resetBtn = $('#btnResetSort');
+  if (resetBtn) resetBtn.disabled = true;
+}
+
+// 現在のプレイリスト内に存在する放送時期一覧でフィルタ用セレクトボックスを更新
+function updateSeasonFilterOptions() {
+  const filterSel = $('#filterSeasonSelect');
+  if (!filterSel) return;
+  const counts = new Map(); // seasonScore -> count
+  for (const t of state.tracks) {
+    const score = getTrackSeasonScore(t);
+    if (score > 0) {
+      counts.set(score, (counts.get(score) || 0) + 1);
+    }
+  }
+  const sortedScores = [...counts.keys()].sort((a, b) => b - a);
+  const currentVal = state.seasonFilter;
+  let html = '<option value="">すべての時期</option>';
+  for (const score of sortedScores) {
+    const label = formatSeasonScore(score);
+    const count = counts.get(score);
+    const sel = String(score) === String(currentVal) ? ' selected' : '';
+    html += `<option value="${score}"${sel}>${esc(label)} (${count}曲)</option>`;
+  }
+  filterSel.innerHTML = html;
+  if (currentVal && !counts.has(Number(currentVal))) {
+    state.seasonFilter = '';
+    filterSel.value = '';
+  } else {
+    filterSel.value = currentVal;
+  }
+}
+
+// ソート順および放送時期フィルタを即座に適用
+function applySortAndFilter() {
+  const order = state.sortOrder || 'original';
+  const seasonFilter = state.seasonFilter || '';
+
+  // 1. state.tracks を指定のソート順で並び替え（同値時は originalIndex 昇順で安定化）
+  state.tracks.sort((a, b) => {
+    if (order === 'season-desc' || order === 'season-asc') {
+      const sa = getTrackSeasonScore(a);
+      const sb = getTrackSeasonScore(b);
+      if (sa <= 0 && sb <= 0) return a.originalIndex - b.originalIndex;
+      if (sa <= 0) return 1;
+      if (sb <= 0) return -1;
+      if (sa !== sb) return order === 'season-desc' ? sb - sa : sa - sb;
+      return a.originalIndex - b.originalIndex;
+    }
+    if (order === 'added-desc' || order === 'added-asc') {
+      const ta = parseAddedTime(a.addedAt);
+      const tb = parseAddedTime(b.addedAt);
+      if (ta <= 0 && tb <= 0) return a.originalIndex - b.originalIndex;
+      if (ta <= 0) return 1;
+      if (tb <= 0) return -1;
+      if (ta !== tb) return order === 'added-desc' ? tb - ta : ta - tb;
+      return a.originalIndex - b.originalIndex;
+    }
+    // デフォルト: originalIndex の昇順（プレイリスト本来の順番に完全復元）
+    return a.originalIndex - b.originalIndex;
+  });
+
+  // 2. DOM要素（#trackList 内の li.track）をソート後の順番に並び替え＆フィルタ適用
+  const listEl = $('#trackList');
+  if (listEl && listEl.children.length) {
+    const rowMap = new Map();
+    for (const el of listEl.children) {
+      rowMap.set(Number(el.dataset.originalIndex), el);
+    }
+    const frag = document.createDocumentFragment();
+    for (const t of state.tracks) {
+      const li = rowMap.get(t.originalIndex);
+      if (!li) continue;
+      li.classList.toggle('has-anime', hasAnime(t.id));
+      const matchSeason = !seasonFilter || String(getTrackSeasonScore(t)) === String(seasonFilter);
+      li.classList.toggle('season-filtered-out', !matchSeason);
+      frag.appendChild(li);
+    }
+    listEl.appendChild(frag);
+  }
+
+  // 3. 「元の順番に戻す」ボタンの活性状態を更新
+  const resetBtn = $('#btnResetSort');
+  if (resetBtn) {
+    resetBtn.disabled = (order === 'original' && !seasonFilter);
+  }
+}
+
+// 「元の順番に戻す」ボタンの実行処理
+function resetToOriginalOrder() {
+  state.sortOrder = 'original';
+  state.seasonFilter = '';
+  const sortSel = $('#sortOrderSelect');
+  if (sortSel) sortSel.value = 'original';
+  const filterSel = $('#filterSeasonSelect');
+  if (filterSel) filterSel.value = '';
+  applySortAndFilter();
+  toast('元の順番に復元しました', '', 1500);
 }
 
 /* ==========================================================
@@ -759,7 +1032,7 @@ function themeClass(theme) {
   return '';
 }
 
-// バッジのHTMLを生成
+// バッジのHTMLを生成（アニメタイトル枠と放送時期枠を別々に横並び表示）
 function badgeHTML(id) {
   const c = state.animeCache[id];
   const idAttr = esc(id);
@@ -775,10 +1048,21 @@ function badgeHTML(id) {
   if (c.none || !c.entries?.length) {
     return `<button class="anime-badge none" data-edit="${idAttr}" type="button" title="タップで手動入力">${c.manual ? '— アニメ曲ではない' : '＋ タイアップ情報なし'}</button>`;
   }
+  const track = state.knownTracks.get(id);
+  const fallbackSeason = track ? inferSeasonFromReleaseDate(track.releaseDate) : null;
   const shown = c.entries.slice(0, 2);
   let html = shown.map((e) => {
+    const seasonText = e.seasonText
+      || formatSeasonScore(e.seasonScore || c.seasonScore)
+      || c.seasonText
+      || fallbackSeason?.seasonText
+      || '';
     const label = `🎬 ${e.anime}${e.theme ? ' ' + e.theme : ''}`;
-    return `<button class="anime-badge ${themeClass(e.theme)} ${c.manual ? 'manual' : ''}" data-edit="${idAttr}" type="button" title="${esc(label)}（タップで編集）"><span class="b-text">${esc(label)}</span></button>`;
+    const titleBadge = `<button class="anime-badge ${themeClass(e.theme)} ${c.manual ? 'manual' : ''}" data-edit="${idAttr}" type="button" title="${esc(label)}（タップで編集）"><span class="b-text">${esc(label)}</span></button>`;
+    const seasonBadge = seasonText
+      ? `<span class="anime-season-badge" title="放送時期: ${esc(seasonText)}">${esc(seasonText)}</span>`
+      : '';
+    return titleBadge + seasonBadge;
   }).join('');
   if (c.entries.length > 2) {
     html += `<button class="anime-badge none" data-edit="${idAttr}" type="button">+${c.entries.length - 2}</button>`;
@@ -814,7 +1098,11 @@ const animeQueue = { items: [], running: 0, concurrency: 1, pending: new Set() }
 
 function enqueueAnime(track, priority = false) {
   if (!track?.id || track.isLocal && !track.name) return;
-  if (state.animeCache[track.id]) { updateBadges(track.id); return; }
+  if (state.animeCache[track.id]) {
+    ensureTrackSeasonCache(track);
+    updateBadges(track.id);
+    return;
+  }
   if (animeQueue.pending.has(track.id)) {
     if (priority) {
       const idx = animeQueue.items.findIndex((t) => t.id === track.id);
@@ -852,6 +1140,8 @@ function pumpAnimeQueue() {
       } finally {
         animeQueue.pending.delete(track.id);
         updateBadges(track.id);
+        updateSeasonFilterOptions();
+        if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
         updateAnimeProgress();
         if (!fromMemory) await sleep(500); // 外部APIへの負荷軽減
         animeQueue.running--;
@@ -1012,7 +1302,13 @@ async function lookupAnimeThemes(track) {
     const key = `${anime}|${theme}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    entries.push({ anime, theme });
+    const seasonInfo = buildSeasonInfo(th.anime?.year, th.anime?.season)
+      || inferSeasonFromReleaseDate(track.releaseDate, th.anime?.year);
+    entries.push({
+      anime,
+      theme,
+      ...(seasonInfo || {}),
+    });
   }
   if (!entries.length) return null;
   return { entries, source: 'AnimeThemes', confidence: strong ? 'high' : 'low' };
@@ -1234,18 +1530,41 @@ async function lookupWikipedia(track) {
   return { entries: [{ anime: best.anime, theme: best.theme }], source: 'Wikipedia' };
 }
 
+// 検索結果に放送時期（seasonScore等）を付与し、未取得時はリリース日から自動推測して補完
+function finalizeAnimeResult(result, track) {
+  const fallback = inferSeasonFromReleaseDate(track?.releaseDate);
+  const entries = (result.entries || []).map((e) => {
+    const sInfo = (e.seasonScore && e.seasonText)
+      ? { year: e.year, season: e.season, seasonScore: e.seasonScore, seasonText: e.seasonText, ...(e.seasonFallback ? { seasonFallback: true } : {}) }
+      : (buildSeasonInfo(e.year, e.season) || inferSeasonFromReleaseDate(track?.releaseDate, e.year) || fallback);
+    return sInfo ? { ...e, ...sInfo } : e;
+  });
+  const primary = entries[0]?.seasonScore ? entries[0] : fallback;
+  return {
+    ...result,
+    entries,
+    ...(primary?.seasonScore ? {
+      year: primary.year,
+      season: primary.season,
+      seasonScore: primary.seasonScore,
+      seasonText: primary.seasonText || formatSeasonScore(primary.seasonScore),
+      ...(primary.seasonFallback ? { seasonFallback: true } : {}),
+    } : {}),
+  };
+}
+
 // 総合検索：曲名解析 → Wikipedia（日本語記事解析） → AnimeThemes
 async function lookupAnime(track) {
-  if (track.isLocal && !track.name) return { entries: [], none: true, source: '-' };
+  if (track.isLocal && !track.name) return finalizeAnimeResult({ entries: [], none: true, source: '-' }, track);
 
   const fromName = lookupFromTrackName(track);
-  if (fromName) return fromName;
+  if (fromName) return finalizeAnimeResult(fromName, track);
 
   let wiki = null;
   let wikiError = null;
   try {
     wiki = await lookupWikipedia(track);
-    if (wiki && wiki._fromMemory) return wiki;
+    if (wiki && wiki._fromMemory) return finalizeAnimeResult(wiki, track);
   } catch (e) {
     wikiError = e;
   }
@@ -1263,17 +1582,17 @@ async function lookupAnime(track) {
     const wType = themeClass(wiki.entries[0].theme);
     if (!wType || !atType || atType === wType) {
       const entries = at.entries.map((e, i) => (i === 0
-        ? { anime: wiki.entries[0].anime, theme: wiki.entries[0].theme || e.theme, alt: e.anime }
+        ? { ...e, anime: wiki.entries[0].anime, theme: wiki.entries[0].theme || e.theme, alt: e.anime }
         : e));
-      return { entries, source: 'Wikipedia + AnimeThemes' };
+      return finalizeAnimeResult({ entries, source: 'Wikipedia + AnimeThemes' }, track);
     }
-    return wiki;
+    return finalizeAnimeResult(wiki, track);
   }
-  if (wiki) return wiki;
-  if (at) return at;
+  if (wiki) return finalizeAnimeResult(wiki, track);
+  if (at) return finalizeAnimeResult(at, track);
   // Wikipediaが通信エラーやレート制限で失敗した場合は「情報なし」としてキャッシュせずエラー扱いにする
   if (wikiError || atError) throw (wikiError || atError);
-  return { entries: [], none: true, source: '自動検索' };
+  return finalizeAnimeResult({ entries: [], none: true, source: '自動検索' }, track);
 }
 
 /* ==========================================================
@@ -1310,9 +1629,16 @@ function saveEdit() {
     toast('アニメ名を入力してください（アニメ曲でない場合は「アニメ曲ではない」を押してください）', 'error');
     return;
   }
-  setAnimeCache(id, { entries: [{ anime, theme }], source: 'manual', manual: true });
+  const track = state.knownTracks.get(id);
+  const prev = state.animeCache[id]?.entries?.[0];
+  const preservedSeason = prev?.seasonScore
+    ? { year: prev.year, season: prev.season, seasonScore: prev.seasonScore, seasonText: prev.seasonText }
+    : {};
+  setAnimeCache(id, finalizeAnimeResult({ entries: [{ anime, theme, ...preservedSeason }], source: 'manual', manual: true }, track));
   state.animeErrors.delete(id);
   updateBadges(id);
+  updateSeasonFilterOptions();
+  if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
   updateAnimeProgress();
   closeModal('editModal');
   toast('タイアップ情報を保存しました', 'success');
@@ -1321,8 +1647,11 @@ function saveEdit() {
 function saveEditNone() {
   const id = state.editingTrackId;
   if (!id) return;
-  setAnimeCache(id, { entries: [], none: true, source: 'manual', manual: true });
+  const track = state.knownTracks.get(id);
+  setAnimeCache(id, finalizeAnimeResult({ entries: [], none: true, source: 'manual', manual: true }, track));
   updateBadges(id);
+  updateSeasonFilterOptions();
+  if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
   updateAnimeProgress();
   closeModal('editModal');
 }
@@ -2258,14 +2587,39 @@ async function importCache(file) {
       if (v && typeof v === 'object' && Array.isArray(v.entries)) {
         const entries = v.entries
           .filter((e) => e && typeof e.anime === 'string')
-          .map((e) => ({ anime: String(e.anime).slice(0, 200), theme: String(e.theme || '').slice(0, 100) }));
-        state.animeCache[id] = { entries, none: !!v.none, manual: !!v.manual, source: String(v.source || 'import'), ts: v.ts || Date.now() };
+          .map((e) => {
+            const sInfo = buildSeasonInfo(e.year, e.season)
+              || (Number.isFinite(Number(e.seasonScore)) && Number(e.seasonScore) > 19000
+                ? { year: Math.floor(Number(e.seasonScore) / 10), season: e.season || '', seasonScore: Number(e.seasonScore), seasonText: e.seasonText || formatSeasonScore(e.seasonScore) }
+                : null);
+            return {
+              anime: String(e.anime).slice(0, 200),
+              theme: String(e.theme || '').slice(0, 100),
+              ...(sInfo || {}),
+            };
+          });
+        const topScore = Number(v.seasonScore) || entries[0]?.seasonScore || null;
+        state.animeCache[id] = {
+          entries,
+          none: !!v.none,
+          manual: !!v.manual,
+          source: String(v.source || 'import'),
+          ...(topScore ? {
+            year: v.year || entries[0]?.year || Math.floor(topScore / 10),
+            season: v.season || entries[0]?.season || '',
+            seasonScore: topScore,
+            seasonText: v.seasonText || entries[0]?.seasonText || formatSeasonScore(topScore),
+          } : {}),
+          ts: v.ts || Date.now(),
+        };
         count++;
       }
     }
     saveAnimeCache();
     updateCacheInfo();
-    state.tracks.forEach((t) => updateBadges(t.id));
+    state.tracks.forEach((t) => { ensureTrackSeasonCache(t); updateBadges(t.id); });
+    updateSeasonFilterOptions();
+    if (state.sortOrder !== 'original' || state.seasonFilter) applySortAndFilter();
     updateAnimeProgress();
     toast(`${count}件をインポートしました`, 'success');
   } catch (e) {
@@ -2366,7 +2720,9 @@ function bindUI() {
       return;
     }
     lastTrackClick = { li: null, time: 0 };
-    const track = state.tracks.find((t) => t.id === li.dataset.id && String(t.pos + 1) === li.querySelector('.t-num').textContent)
+    const origIdx = Number(li.dataset.originalIndex);
+    const track = state.tracks.find((t) => t.originalIndex === origIdx)
+      || state.tracks.find((t) => t.id === li.dataset.id)
       || state.knownTracks.get(li.dataset.id);
     playTrack(track);
   });
@@ -2378,9 +2734,18 @@ function bindUI() {
     }
   });
 
-  // フィルター・再検索
+  // フィルター・ソート・再検索
   $('#filterAnimeOnly').addEventListener('change', (e) => {
     $('#trackList').classList.toggle('filter-anime', e.target.checked);
+  });
+  $('#sortOrderSelect')?.addEventListener('change', (e) => {
+    state.sortOrder = e.target.value || 'original';
+    applySortAndFilter();
+  });
+  $('#btnResetSort')?.addEventListener('click', resetToOriginalOrder);
+  $('#filterSeasonSelect')?.addEventListener('change', (e) => {
+    state.seasonFilter = e.target.value || '';
+    applySortAndFilter();
   });
   $('#btnRescan').addEventListener('click', rescanPlaylist);
 

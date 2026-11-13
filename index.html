@@ -104,12 +104,33 @@
             </div>
           </div>
           <div class="toolbar">
-            <div class="progress-text small muted" id="animeProgress"></div>
-            <div class="toolbar-actions">
-              <label class="toggle small">
-                <input type="checkbox" id="filterAnimeOnly" /> アニメ曲のみ
+            <div class="toolbar-top">
+              <div class="progress-text small muted" id="animeProgress"></div>
+              <div class="toolbar-actions">
+                <label class="toggle small">
+                  <input type="checkbox" id="filterAnimeOnly" /> アニメ曲のみ
+                </label>
+                <button class="btn btn-ghost small" id="btnRescan" title="キャッシュを無視して再検索（手動編集は保持）">再検索</button>
+              </div>
+            </div>
+            <div class="toolbar-controls">
+              <label class="toolbar-select-wrap small">
+                <span class="muted">並び替え:</span>
+                <select id="sortOrderSelect" class="select-input small" aria-label="並び替え">
+                  <option value="original">元の順番（デフォルト）</option>
+                  <option value="season-desc">アニメ放送時期順（新しい順）</option>
+                  <option value="season-asc">アニメ放送時期順（古い順）</option>
+                  <option value="added-desc">追加日順（新しい順）</option>
+                  <option value="added-asc">追加日順（古い順）</option>
+                </select>
               </label>
-              <button class="btn btn-ghost small" id="btnRescan" title="キャッシュを無視して再検索（手動編集は保持）">再検索</button>
+              <button class="btn btn-ghost small" id="btnResetSort" type="button" title="プレイリスト本来の順番に復元" disabled>↩ 元の順番に戻す</button>
+              <label class="toolbar-select-wrap small">
+                <span class="muted">放送時期:</span>
+                <select id="filterSeasonSelect" class="select-input small" aria-label="放送時期で絞り込み">
+                  <option value="">すべての時期</option>
+                </select>
+              </label>
             </div>
           </div>
           <ol class="track-list" id="trackList"></ol>
